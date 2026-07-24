@@ -6,6 +6,7 @@ and stream their output over SSE (runner.py)."""
 from __future__ import annotations
 
 import datetime
+import os
 import shutil
 from pathlib import Path
 from urllib.parse import urlparse
@@ -469,7 +470,10 @@ def wizard():
                            settings=state.load_settings(),
                            properties=state.per_property_pending(),
                            months=state.month_options(),
-                           bank_rec_root=str(config.BANK_REC_ROOT))
+                           bank_rec_root=str(config.BANK_REC_ROOT),
+                           path_sep=os.sep,
+                           example_path=state.bank_rec_example_path(
+                               state.load_settings()["month"]))
 
 
 @app.route("/api/run/stage")

@@ -26,11 +26,11 @@
       <button class="btn primary" data-run="stage">Stage</button></div>
   </li>
   <li>
-    <div class="step-head"><span class="step-n">2</span> <strong>Drop bank documents</strong> (you do this in File Explorer)
+    <div class="step-head"><span class="step-n">2</span> <strong>Drop bank documents</strong> (you do this in {{ file_manager }})
       <button class="btn" id="open-folder-btn" type="button" hidden>📁 Open this folder</button></div>
     <p class="muted">Put each property's bank statement, rec report, deposit slips (in a
       <code>deposit slips\</code> subfolder) and financial reports into its folder under:</p>
-    <p><code id="droppath">{{ bank_rec_root }}\&lt;Month&gt; Bank Rec\&lt;property&gt;\</code></p>
+    <p><code id="droppath">{{ example_path }}</code></p>
   </li>
   <li>
     <div class="step-head"><span class="step-n">3</span> <strong>Assemble</strong> one reconciliation PDF per property
@@ -67,6 +67,7 @@
   const openFolderBtn = document.getElementById('open-folder-btn');
   const reportsList = document.getElementById('reports-list');
   const destRoot = {{ bank_rec_root|tojson }};
+  const pathSep = {{ path_sep|tojson }};
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -97,8 +98,9 @@
   }
 
   function updatePath() {
-    const prop = propSel.value || '<property>';
-    dropPath.textContent = `${destRoot}\\${monthSel.value} Bank Rec\\${prop}\\`;
+    const parts = [destRoot, `${monthSel.value} Bank Rec`];
+    if (propSel.value) parts.push(propSel.value);
+    dropPath.textContent = parts.join(pathSep) + pathSep;
   }
   monthSel.addEventListener('change', () => { updatePath(); loadReports(); });
   propSel.addEventListener('change', updatePath);
@@ -106,7 +108,7 @@
   updatePath();
   loadReports();
 
-  // "Open this folder" — jumps to the staged month/property folder in File Explorer.
+  // "Open this folder" — jumps to the staged month/property folder in the OS file manager.
   openFolderBtn.addEventListener('click', async () => {
     const params = new URLSearchParams({ month: monthSel.value, property: propSel.value });
     openFolderBtn.disabled = true;
