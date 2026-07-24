@@ -432,3 +432,77 @@ def api_key_present() -> bool:
         except OSError:
             pass
     return bool(os.environ.get("ANTHROPIC_API_KEY"))
+
+
+def _api_key_in_env_file() -> str:
+    """The ANTHROPIC_API_KEY value currently stored in .env, or '' if absent/unreadable."""
+    if not config.ENV_FILE.exists():
+        return ""
+    try:
+        for line in config.ENV_FILE.read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("ANTHROPIC_API_KEY="):
+                return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+
+
+def api_key_from_env_var() -> bool:
+    """True when the environment supplies a DIFFERENT key than .env holds - an outside
+    override (shell profile, system variable) that python-dotenv won't replace, so it wins.
+
+    Deliberately a comparison, not a bare os.environ check: importing this module imports
+    core.processor, which calls load_dotenv(), so .env's own key is always in os.environ by
+    now. A bare check would report an override every single time."""
+    env_val = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not env_val:
+        return False
+    return env_val != _api_key_in_env_file()
+
+
+def save_api_key(key: str) -> None:
+    """Write ANTHROPIC_API_KEY into the app's .env, preserving every other line.
+
+    The value lands in a config file, so it's treated as untrusted input: a newline would
+    otherwise inject arbitrary extra .env lines. Deliberately NOT validated against an
+    'sk-ant-' prefix - key formats change, and rejecting a valid key is worse than accepting
+    a bad one, which the processor already reports clearly ("Claude rejected your API key").
+
+    Raises ValueError if the key is empty or contains newlines/control characters.
+    """
+    key = (key or "").strip()
+    if not key:
+        raise ValueError("The API key can't be blank.")
+    if any(c in key for c in "\r\n") or any(ord(c) < 32 or ord(c) == 127 for c in key):
+        raise ValueError("The API key can't contain line breaks or control characters. "
+                         "Paste just the key itself.")
+
+    path = config.ENV_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    if path.exists():
+        lines = path.read_text(encoding="utf-8").splitlines()
+    out, replaced = [], False
+    for line in lines:
+        if line.strip().startswith("ANTHROPIC_API_KEY="):
+            if not replaced:                       # collapse any duplicates to one line
+                out.append(f"ANTHROPIC_API_KEY={key}")
+                replaced = True
+            continue
+        out.append(line)
+    if not replaced:
+        out.append(f"ANTHROPIC_API_KEY={key}")
+
+    # Atomic write: a truncated .env would lose the key AND any other settings.
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)                       # no-op in practice on Windows
+    except OSError:
+        pass
+    os.replace(tmp, path)
+
+    # runner.py hands jobs env={**os.environ, ...}, and load_dotenv() will NOT overwrite a
+    # variable that already exists - so without this line the subprocess keeps using the key
+    # loaded at import and the save silently does nothing until the app restarts.
+    os.environ["ANTHROPIC_API_KEY"] = key
