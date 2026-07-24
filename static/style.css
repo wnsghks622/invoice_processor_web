@@ -431,3 +431,6 @@ tr.editrow > td { padding: 0; border-bottom: 1px solid var(--line); background: 
 .replace-title { font-weight: 600; font-size: .85rem; }
 .replace-form input[type=file] { font-size: .82rem; max-width: 100%; }
 .replace-form .muted { flex-basis: 100%; }        /* note drops to its own line, no cramping */
+
+/* Pagination controls on the Invoices page */
+.table-meta .pager { display: flex; gap: 10px; align-items: center; }

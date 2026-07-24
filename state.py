@@ -105,6 +105,19 @@ def annotate_duplicates(rows: list[dict]) -> list[dict]:
     return rows
 
 
+def _month_dir_sort_key(p: Path) -> datetime.datetime:
+    """Chronological key for a '<Month YYYY> Bank Rec' folder. Plain name sorting is
+    alphabetical ('May 2026' > 'June 2026', and years don't order at all), so the
+    newest-first fallback scan below needs the label parsed as a real date."""
+    label = p.name[: -len(" Bank Rec")].strip() if p.name.endswith(" Bank Rec") else p.name
+    for fmt in ("%B %Y", "%b %Y"):
+        try:
+            return datetime.datetime.strptime(label, fmt)
+        except ValueError:
+            continue
+    return datetime.datetime.min
+
+
 def resolve_invoice_file(inv: dict):
     """Best existing on-disk path for an invoice's filed PDF, or None.
 
@@ -128,8 +141,9 @@ def resolve_invoice_file(inv: dict):
     review = config.PROCESSED / ip._safe_folder_name(ip.PROPERTY_REVIEW_TAB) / stored
     if review != processed:              # unassigned invoices are filed under Needs Review/
         candidates.append(review)
-    if config.BANK_REC_ROOT.exists():    # last resort: any month's staged copy for this property
-        for monthdir in sorted(config.BANK_REC_ROOT.glob("* Bank Rec"), reverse=True):
+    if config.BANK_REC_ROOT.exists():    # last resort: any month's staged copy, newest month first
+        for monthdir in sorted(config.BANK_REC_ROOT.glob("* Bank Rec"),
+                               key=_month_dir_sort_key, reverse=True):
             candidates.append(monthdir / prop_safe / stored)
 
     for c in candidates:

@@ -13,24 +13,27 @@
   <tbody>
   {% for p in properties %}
     <tr>
-      <form method="post" action="{{ url_for('edit_property', prop_id=p.id) }}">
-        <td><input name="canonical_name" value="{{ p.name }}"></td>
-        <td><input name="property_code" value="{{ p.code }}" size="8"></td>
-        <td><input name="aliases" value="{{ p.aliases }}" class="wide"></td>
-        <td class="num">{{ p.pending }}</td>
-        <td class="row-actions">
-          <button class="btn small" type="submit">Save</button>
-      </form>
-          <form method="post" action="{{ url_for('delete_property', prop_id=p.id) }}"
-                onsubmit="return confirm('Delete {{ p.name }}? Invoices keep their property name; only the list entry is removed.');">
-            <button class="btn small danger" type="submit">Delete</button>
-          </form>
-        </td>
+      <td><input form="edit-prop-{{ p.id }}" name="canonical_name" value="{{ p.name }}"></td>
+      <td><input form="edit-prop-{{ p.id }}" name="property_code" value="{{ p.code }}" size="8"></td>
+      <td><input form="edit-prop-{{ p.id }}" name="aliases" value="{{ p.aliases }}" class="wide"></td>
+      <td class="num">{{ p.pending }}</td>
+      <td class="row-actions">
+        <button class="btn small" type="submit" form="edit-prop-{{ p.id }}">Save</button>
+        <button class="btn small danger delete-row" type="submit" form="del-prop-{{ p.id }}"
+                data-name="{{ p.name }}">Delete</button>
+      </td>
     </tr>
   {% endfor %}
   </tbody>
 </table>
 </div>
+
+{# The row forms live OUTSIDE the table: a <form> straddling <tr>s is invalid HTML that only
+   worked via parser quirks. Inputs/buttons associate through their form="" attribute. #}
+{% for p in properties %}
+  <form id="edit-prop-{{ p.id }}" method="post" action="{{ url_for('edit_property', prop_id=p.id) }}"></form>
+  <form id="del-prop-{{ p.id }}" method="post" action="{{ url_for('delete_property', prop_id=p.id) }}"></form>
+{% endfor %}
 
 <section>
   <h2>Add a property</h2>
@@ -42,4 +45,15 @@
   </form>
 </section>
 </div>
+{% endblock %}
+{% block scripts %}
+<script>
+  document.querySelectorAll('.delete-row').forEach(btn => {
+    btn.addEventListener('click', e => {
+      if (!confirm(`Delete ${btn.dataset.name}?\n\nInvoices keep their property name; only the list entry is removed.`)) {
+        e.preventDefault();
+      }
+    });
+  });
+</script>
 {% endblock %}

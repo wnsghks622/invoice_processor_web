@@ -245,6 +245,12 @@ def extract_invoice_data(
             max_tokens=8000,   # room for many bills (one per unit) each with line items
             messages=[{"role": "user", "content": content}],
         )
+        if getattr(message, "stop_reason", None) == "max_tokens":
+            # Truncated JSON would fail to parse anyway - say WHY instead of a generic error,
+            # and never record a partial read of a many-bill file.
+            print("    [!] Claude's reply hit the length limit before finishing (file has too "
+                  "many bills for one pass) - skipping this file.")
+            return []
         raw = message.content[0].text.strip()
         # Strip markdown fences if model adds them
         raw = re.sub(r"^```json\s*|```$", "", raw, flags=re.MULTILINE).strip()
@@ -516,18 +522,25 @@ def data_merge_unit(keep, extra):
 
 
 def _parse_amount(value):
-    """Parse a money value like '$1,228.50' into a float, or None if not a clean number."""
+    """Parse a money value like '$1,228.50' into a float, or None if not a clean number.
+    Accounting negatives are honored: '(123.45)', '123.45-' and '-123.45' all mean a credit
+    of 123.45 (previously parentheses were stripped and the sign silently lost)."""
     if value is None:
         return None
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
-    s = re.sub(r"[^0-9.\-]", "", str(value))
-    if not s or s in ("-", ".", "-.", "--"):
+    text = str(value).strip()
+    core = text.lstrip("$ \t")                # '$ (1,000.00)' is still a parenthesized negative
+    neg = ((core.startswith("(") and core.endswith(")"))
+           or text.endswith("-") or text.startswith("-"))
+    s = re.sub(r"[^0-9.]", "", text)          # digits and dot; the sign is handled above
+    if not s or s == ".":
         return None
     try:
-        return float(s)
-    except ValueError:
+        amt = float(s)
+    except ValueError:                        # e.g. several dots ('12.34.56')
         return None
+    return -amt if neg else amt
 
 
 def _summarize_line_items(items) -> str:
@@ -947,7 +960,9 @@ def main():
 
     print(f"\n[*] Found {len(files)} invoice file(s) in '{INPUT_FOLDER.name}'")
 
-    claude = anthropic.Anthropic(api_key=anthropic_key)
+    # max_retries=4: the SDK then retries rate limits (429), overload (529) and transient
+    # connection errors itself with proper backoff, instead of failing the file on first hit.
+    claude = anthropic.Anthropic(api_key=anthropic_key, max_retries=4)
 
     properties = load_property_list()
     if properties:

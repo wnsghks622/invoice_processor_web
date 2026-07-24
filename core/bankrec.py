@@ -29,7 +29,6 @@ Usage:
 """
 
 import os, re, io, sys, csv, argparse, datetime, logging
-from itertools import combinations
 
 from pypdf import PdfReader, PdfWriter
 
@@ -515,15 +514,32 @@ def profile_support(paths, ocr_mode, sidecar=None):
 # ---------------------------------------------------------------- subset-sum
 def _subset_sum(values, target, maxn=8):
     """Indices of one minimal-size subset of `values` (floats) summing to target
-    (cents-exact), or None. Bounded; pools here are tiny."""
+    (cents-exact), or None. Dynamic programming over reachable cent-sums (each value used
+    at most once), so a busy statement can't hang the assembler the way trying every
+    combination could (C(40,8) is tens of millions). Bails out with None if the sum table
+    explodes - a real statement never gets near the cap."""
     cents = [round(v * 100) for v in values]
     tc = round(target * 100)
-    n = len(values)
-    for r in range(1, min(n, maxn) + 1):
-        for idx in combinations(range(n), r):
-            if sum(cents[i] for i in idx) == tc:
-                return list(idx)
-    return None
+    if tc <= 0:
+        return None
+    LIMIT = 50000                       # reachable-sum cap (memory + time bound)
+    best = {0: ()}                      # cent-sum -> smallest index-tuple reaching it
+    for i, c in enumerate(cents):
+        if c <= 0 or c > tc:
+            continue
+        for s, idx in list(best.items()):   # snapshot: item i joins each chain at most once
+            if len(idx) >= maxn:
+                continue
+            ns = s + c
+            if ns > tc:
+                continue
+            cur = best.get(ns)
+            if cur is None or len(idx) + 1 < len(cur):
+                best[ns] = idx + (i,)
+        if len(best) > LIMIT:
+            return None
+    hit = best.get(tc)
+    return list(hit) if hit else None
 
 # ---------------------------------------------------------------- placement
 def _doc_amt(d):

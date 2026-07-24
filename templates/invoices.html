@@ -64,8 +64,16 @@
 </form>
 
 <div class="table-meta">
-  <div><span class="count">{{ invoices|length }}</span> invoice{{ '' if invoices|length == 1 else 's' }}
+  <div><span class="count">{{ total_rows }}</span> invoice{{ '' if total_rows == 1 else 's' }}
+    {% if pages > 1 %}· showing {{ (page - 1) * page_size + 1 }}–{{ (page - 1) * page_size + invoices|length }}{% endif %}
     · tick <strong>Yardi</strong> as you key each in — saves instantly</div>
+  {% if pages > 1 %}
+  <div class="pager">
+    {% if page > 1 %}<a class="btn small" href="{{ url_for('invoices_page', page=page - 1, **base_args) }}">&larr; Prev</a>{% endif %}
+    <span class="muted">page {{ page }} / {{ pages }}</span>
+    {% if page < pages %}<a class="btn small" href="{{ url_for('invoices_page', page=page + 1, **base_args) }}">Next &rarr;</a>{% endif %}
+  </div>
+  {% endif %}
 </div>
 
 <div class="table-card">

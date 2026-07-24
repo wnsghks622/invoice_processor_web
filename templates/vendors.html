@@ -13,22 +13,24 @@
   <tbody>
   {% for v in vendors %}
     <tr>
-      <form method="post" action="{{ url_for('edit_vendor', vendor_id=v.id) }}">
-        <td><input name="short_name" value="{{ v.short_name }}" size="14"></td>
-        <td><input name="aliases" value="{{ v.aliases }}" class="wide"></td>
-        <td class="row-actions">
-          <button class="btn small" type="submit">Save</button>
-      </form>
-          <form method="post" action="{{ url_for('delete_vendor', vendor_id=v.id) }}"
-                onsubmit="return confirm('Delete {{ v.short_name }}?');">
-            <button class="btn small danger" type="submit">Delete</button>
-          </form>
-        </td>
+      <td><input form="edit-vendor-{{ v.id }}" name="short_name" value="{{ v.short_name }}" size="14"></td>
+      <td><input form="edit-vendor-{{ v.id }}" name="aliases" value="{{ v.aliases }}" class="wide"></td>
+      <td class="row-actions">
+        <button class="btn small" type="submit" form="edit-vendor-{{ v.id }}">Save</button>
+        <button class="btn small danger delete-row" type="submit" form="del-vendor-{{ v.id }}"
+                data-name="{{ v.short_name }}">Delete</button>
+      </td>
     </tr>
   {% endfor %}
   </tbody>
 </table>
 </div>
+
+{# Row forms live OUTSIDE the table (form-in-tr is invalid HTML); controls associate via form="". #}
+{% for v in vendors %}
+  <form id="edit-vendor-{{ v.id }}" method="post" action="{{ url_for('edit_vendor', vendor_id=v.id) }}"></form>
+  <form id="del-vendor-{{ v.id }}" method="post" action="{{ url_for('delete_vendor', vendor_id=v.id) }}"></form>
+{% endfor %}
 
 <section>
   <h2>Add a vendor</h2>
@@ -39,4 +41,13 @@
   </form>
 </section>
 </div>
+{% endblock %}
+{% block scripts %}
+<script>
+  document.querySelectorAll('.delete-row').forEach(btn => {
+    btn.addEventListener('click', e => {
+      if (!confirm(`Delete ${btn.dataset.name}?`)) e.preventDefault();
+    });
+  });
+</script>
 {% endblock %}

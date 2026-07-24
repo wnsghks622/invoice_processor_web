@@ -109,6 +109,9 @@ def api_run_process():
 
 # =========================================================================== invoices
 
+INVOICES_PAGE_SIZE = 100
+
+
 @app.route("/invoices")
 def invoices_page():
     prop = request.args.get("property") or None
@@ -127,9 +130,22 @@ def invoices_page():
         kwargs["duplicates_only"] = True
     rows = db.list_invoices(property=prop, search=request.args.get("q", ""), **kwargs)
     rows = state.sort_and_filter_invoices(rows, sort, imonth, pmonth, amin, amax)
+
+    # Paginate BEFORE the per-row annotation below - duplicate lookups and the on-disk
+    # file checks are the expensive part, so only the visible page pays for them.
+    total_rows = len(rows)
+    pages = max(1, -(-total_rows // INVOICES_PAGE_SIZE))
+    try:
+        page = int(request.args.get("page", 1))
+    except ValueError:
+        page = 1
+    page = min(max(page, 1), pages)
+    rows = rows[(page - 1) * INVOICES_PAGE_SIZE : page * INVOICES_PAGE_SIZE]
+
     state.annotate_duplicates(rows)      # attach duplicate_of + matched_fields to DUPLICATE rows
     for r in rows:                       # flag which rows have an openable file on disk
         r["has_file"] = state.resolve_invoice_file(r) is not None
+    base_args = {k: v for k, v in request.args.items() if k != "page"}
     return render_template("invoices.html", invoices=rows,
                            properties=db.all_properties(),
                            current_property=prop, current_filter=filt,
@@ -138,7 +154,9 @@ def invoices_page():
                            invoice_months=state.distinct_months("invoice_date"),
                            processed_months=state.distinct_months("date_processed"),
                            current_imonth=imonth, current_pmonth=pmonth,
-                           amin=request.args.get("amin", ""), amax=request.args.get("amax", ""))
+                           amin=request.args.get("amin", ""), amax=request.args.get("amax", ""),
+                           page=page, pages=pages, total_rows=total_rows,
+                           page_size=INVOICES_PAGE_SIZE, base_args=base_args)
 
 
 def _parse_money_arg(s: str):
