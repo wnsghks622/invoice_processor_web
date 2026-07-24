@@ -155,6 +155,27 @@ def resolve_invoice_file(inv: dict):
     return None
 
 
+# --------------------------------------------------------------------------- platform seam
+# All platform branching for the UI lives here, so templates never test the platform
+# themselves (app.py injects FILE_MANAGER into every page via inject_shell).
+
+IS_WINDOWS = sys.platform == "win32"
+IS_MAC = sys.platform == "darwin"
+
+
+def file_manager_name(platform: str) -> str:
+    """Display name of the OS file manager, for UI copy ('Show this file in ...').
+    Takes the platform string so both branches are testable from either OS."""
+    if platform == "win32":
+        return "File Explorer"
+    if platform == "darwin":
+        return "Finder"
+    return "your file manager"
+
+
+FILE_MANAGER = file_manager_name(sys.platform)
+
+
 def reveal_in_explorer(path) -> None:
     """Open the OS file manager with `path` selected (server == user on this localhost app).
 
