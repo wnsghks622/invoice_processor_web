@@ -44,10 +44,12 @@ def _reject_cross_site():
 
 @app.context_processor
 def inject_shell():
-    """The sidebar badge and period pill are part of base.html, so every page needs them."""
+    """The sidebar badge and period pill are part of base.html, so every page needs them.
+    `file_manager` is here too so no template has to test the platform itself."""
     return {
         "shell_needs_review": db.counts()["needs_review"],
         "shell_month": state.load_settings()["month"],
+        "file_manager": state.FILE_MANAGER,
     }
 
 
