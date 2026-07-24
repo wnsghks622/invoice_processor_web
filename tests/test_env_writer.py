@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -104,6 +105,25 @@ class SaveApiKey(unittest.TestCase):
             self.assertEqual(os.environ["ANTHROPIC_API_KEY"], FAKE_KEY)
         finally:
             os.environ.pop("ANTHROPIC_API_KEY", None)
+
+    def test_cleans_up_temp_file_when_replace_fails(self):
+        # Simulates a failure between creating the temp file and the atomic swap (disk full,
+        # permission error, an antivirus lock on Windows, ...). Without cleanup, a
+        # credential-bearing .env.tmp would be left sitting at the repo root - and
+        # .gitignore only matches the exact name ".env", not ".env.*", so that leftover is
+        # one broad `git add` away from landing in git history.
+        config.ENV_FILE.write_text(f"ANTHROPIC_API_KEY={FAKE_KEY}\n", encoding="utf-8")
+        with mock.patch("os.replace", side_effect=OSError("simulated replace failure")):
+            with self.assertRaises(OSError):
+                state.save_api_key(OTHER_KEY)
+        # (a) the exception propagated (asserted above via assertRaises) rather than being
+        # swallowed by the cleanup logic.
+        # (b) no .env.tmp, or anything other than .env, survives in the directory.
+        leftovers = [p.name for p in self.tmp.iterdir()]
+        self.assertEqual(leftovers, [".env"])
+        # (c) the original .env content is untouched - the failed save didn't corrupt it.
+        self.assertEqual(config.ENV_FILE.read_text(encoding="utf-8"),
+                          f"ANTHROPIC_API_KEY={FAKE_KEY}\n")
 
 
 class ApiKeyFromEnvVar(unittest.TestCase):

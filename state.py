@@ -495,12 +495,26 @@ def save_api_key(key: str) -> None:
 
     # Atomic write: a truncated .env would lose the key AND any other settings.
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
+    did_replace = False
     try:
-        os.chmod(tmp, 0o600)                       # no-op in practice on Windows
-    except OSError:
-        pass
-    os.replace(tmp, path)
+        tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
+        try:
+            os.chmod(tmp, 0o600)                   # no-op in practice on Windows
+        except OSError:
+            pass
+        os.replace(tmp, path)
+        did_replace = True
+    finally:
+        # A failure anywhere above (disk full, permission error, an antivirus lock on
+        # Windows, ...) must not leave a credential-bearing .env.tmp sitting at the repo
+        # root: .gitignore only matches the exact name ".env", not ".env.*", so a leftover
+        # temp file is one broad `git add` away from landing in git history. Swallow any
+        # cleanup failure so it can't mask the real exception already propagating.
+        if not did_replace:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     # runner.py hands jobs env={**os.environ, ...}, and load_dotenv() will NOT overwrite a
     # variable that already exists - so without this line the subprocess keeps using the key
