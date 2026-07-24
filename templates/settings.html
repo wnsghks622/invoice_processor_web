@@ -7,10 +7,19 @@
 
 <section>
   <h2>Anthropic API key</h2>
-  <p>Status: {% if api_key_present %}<span class="ok">Found</span>{% else %}<span class="warn">Missing</span>{% endif %}</p>
-  <p class="muted">Stored in this app's own <code>.env</code> file:<br><code>{{ env_file }}</code><br>
-  Add a line <code>ANTHROPIC_API_KEY=sk-ant-...</code> (get a key at
-  <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>), then restart the app.</p>
+  <p>Status: {% if api_key_present %}<span class="ok">Saved</span>{% else %}<span class="warn">Missing</span>{% endif %}</p>
+  {% if api_key_from_env %}
+    <p class="muted"><strong>Note:</strong> <code>ANTHROPIC_API_KEY</code> is set as a system
+    environment variable, which takes priority over anything saved here.</p>
+  {% endif %}
+  <form method="post" action="{{ url_for('save_api_key_route') }}" class="inline-form">
+    <input type="password" name="api_key" placeholder="sk-ant-..." autocomplete="off" required
+           size="34">
+    <button class="btn" type="submit">{% if api_key_present %}Replace key{% else %}Save key{% endif %}</button>
+  </form>
+  <p class="muted">Get a key at
+  <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>.
+  It is stored in this app's own <code>.env</code> file and never shown again:<br><code>{{ env_file }}</code></p>
 </section>
 
 <section>

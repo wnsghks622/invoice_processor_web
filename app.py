@@ -553,6 +553,7 @@ def settings_page():
     return render_template("settings.html",
                            settings=state.load_settings(),
                            api_key_present=state.api_key_present(),
+                           api_key_from_env=state.api_key_from_env_var(),
                            env_file=str(config.ENV_FILE),
                            data_dir=str(config.DATA_DIR))
 
@@ -563,6 +564,30 @@ def save_settings_route():
     s["month"] = request.form.get("month", s["month"]).strip() or s["month"]
     state.save_settings(s)
     flash("Settings saved.")
+    return redirect(url_for("settings_page"))
+
+
+@app.route("/settings/api-key", methods=["POST"])
+def save_api_key_route():
+    """Save the Anthropic API key into .env. The value is never echoed back to the page,
+    put in a flash message, or logged - only whether a key is now saved."""
+    # Check for an outside override BEFORE saving: save_api_key() updates os.environ itself,
+    # which would hide the evidence that a shell/system variable was supplying a different key.
+    had_override = state.api_key_from_env_var()
+    try:
+        state.save_api_key(request.form.get("api_key", ""))
+    except ValueError as e:
+        flash(str(e))
+        return redirect(url_for("settings_page"))
+    except OSError as e:
+        flash(f"Could not write the .env file: {e}")
+        return redirect(url_for("settings_page"))
+    if had_override:
+        flash("API key saved and in use now. Note: ANTHROPIC_API_KEY is also set as a system "
+              "environment variable on this machine — remove it, or that one will take over "
+              "again the next time the app restarts.")
+    else:
+        flash("API key saved. The next run will use it (no restart needed).")
     return redirect(url_for("settings_page"))
 
 
