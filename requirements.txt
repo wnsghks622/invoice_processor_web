@@ -1,0 +1,17 @@
+# Web app
+flask>=3.0
+
+# Invoice processor + reconcile + staging (vendored in core/)
+anthropic>=0.40.0
+openpyxl>=3.1.0
+python-dotenv>=1.0.0
+
+# Bank Rec assembler (core/bankrec.py)
+pypdf>=4.0.0
+
+# Optional - OCR for scanned deposit slips / invoices with no text layer.
+# Also needs the Tesseract program installed separately (not via pip), e.g.
+# C:\Program Files\Tesseract-OCR\  (https://github.com/UB-Mannheim/tesseract/wiki).
+PyMuPDF>=1.24.0
+pytesseract>=0.3.10
+Pillow>=10.0.0

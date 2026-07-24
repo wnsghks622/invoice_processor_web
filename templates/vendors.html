@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Vendors — Invoice Processor{% endblock %}
+{% block page_title %}Vendors{% endblock %}
+{% block page_subtitle %}Short names used when filing invoice PDFs{% endblock %}
+{% block content %}
+<div class="page">
+<p class="lede">Short names used only to shorten filed PDF names (e.g. "Southern California Edison"
+&rarr; <code>SCE_05_2026.pdf</code>). Aliases are semicolon-separated.</p>
+
+<div class="panel">
+<table class="props editable">
+  <thead><tr><th>Short name</th><th>Aliases</th><th></th></tr></thead>
+  <tbody>
+  {% for v in vendors %}
+    <tr>
+      <form method="post" action="{{ url_for('edit_vendor', vendor_id=v.id) }}">
+        <td><input name="short_name" value="{{ v.short_name }}" size="14"></td>
+        <td><input name="aliases" value="{{ v.aliases }}" class="wide"></td>
+        <td class="row-actions">
+          <button class="btn small" type="submit">Save</button>
+      </form>
+          <form method="post" action="{{ url_for('delete_vendor', vendor_id=v.id) }}"
+                onsubmit="return confirm('Delete {{ v.short_name }}?');">
+            <button class="btn small danger" type="submit">Delete</button>
+          </form>
+        </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<section>
+  <h2>Add a vendor</h2>
+  <form method="post" action="{{ url_for('add_vendor') }}" class="add-form">
+    <input name="short_name" placeholder="Short name (required)" required size="14">
+    <input name="aliases" placeholder="Full name; other; spellings" class="wide">
+    <button class="btn primary" type="submit">Add</button>
+  </form>
+</section>
+</div>
+{% endblock %}

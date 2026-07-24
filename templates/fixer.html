@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Needs Review — Invoice Processor{% endblock %}
+{% block page_title %}Needs review{% endblock %}
+{% block page_subtitle %}Invoices whose property couldn't be matched{% endblock %}
+{% block content %}
+<div class="page">
+<p class="lede">Invoices whose service location didn't match any property. Click a vendor to open
+its PDF and see where the work was done, then pick the right property — the invoice moves into
+that property's pending pool (and the filed PDF moves too).</p>
+
+{% if reviews %}
+<div class="table-card">
+<table class="invoices">
+  <thead><tr><th>Vendor</th><th>Invoice #</th><th class="num">Amount</th><th>Read location</th><th>Assign to</th></tr></thead>
+  <tbody>
+  {% for inv in reviews %}
+    <tr>
+      <td class="cell-vendor">
+        {% if inv.has_file %}
+          <a href="{{ url_for('invoice_file', invoice_id=inv.id) }}" target="_blank"
+             rel="noopener" title="Open the saved PDF to see where the work was done">{{ inv.vendor_name }}</a>
+        {% else %}
+          <span title="No saved file found on disk">{{ inv.vendor_name }}</span>
+          <span class="nofile-tag">no file</span>
+        {% endif %}
+      </td>
+      <td>{{ inv.invoice_number }}</td>
+      <td class="num">{% if inv.amount is not none %}${{ '%.2f'|format(inv.amount) }}{% else %}{{ inv.amount_text }}{% endif %}</td>
+      <td class="muted">{{ inv.property or '—' }}</td>
+      <td>
+        <form method="post" action="{{ url_for('fixer_assign', invoice_id=inv.id) }}" class="inline-form">
+          <select name="property" required>
+            <option value="">Choose property…</option>
+            {% for p in properties %}<option value="{{ p.name }}">{{ p.name }}</option>{% endfor %}
+          </select>
+          <button class="btn primary small" type="submit">Assign</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="muted">Tip: the lasting fix is to add the read location as an
+<a href="{{ url_for('properties_page') }}">alias on that property</a> — then future invoices match on their own.</p>
+{% else %}
+<div class="banner">Nothing needs review right now. 🎉</div>
+{% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+uploads_tmp/
+.env
+
+# All user data lives under data/ (database + backups, processed invoices, Bank Rec
+# month folders, settings, exports). None of it belongs in version control.
+data/

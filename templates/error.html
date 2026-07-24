@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Something went wrong — Invoice Processor{% endblock %}
+{% block page_title %}Something went wrong{% endblock %}
+{% block content %}
+<div class="page">
+<div class="banner warn">{{ message }}</div>
+<p><a href="{{ url_for('dashboard') }}">&larr; Back to the dashboard</a></p>
+</div>
+{% endblock %}

@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}Month-end close — Invoice Processor{% endblock %}
+{% block page_title %}Month-end close{% endblock %}
+{% block page_subtitle %}Stage, assemble and reconcile the period{% endblock %}
+{% block content %}
+<div class="page">
+<p class="lede">Four steps. Pick the month once; the buttons run each step and show the output live.</p>
+
+<section class="wizard-month">
+  <label>Month:
+    <select id="month">
+      {% for m in months %}<option value="{{ m }}" {{ 'selected' if m == settings.month }}>{{ m }}</option>{% endfor %}
+    </select>
+  </label>
+  <label class="opt">Property (optional):
+    <select id="property">
+      <option value="">All properties</option>
+      {% for p in properties %}<option value="{{ p.name }}">{{ p.name }} ({{ p.pending }})</option>{% endfor %}
+    </select>
+  </label>
+</section>
+
+<ol class="wizard-steps">
+  <li>
+    <div class="step-head"><span class="step-n">1</span> <strong>Stage</strong> pending invoices into the month folder
+      <button class="btn primary" data-run="stage">Stage</button></div>
+  </li>
+  <li>
+    <div class="step-head"><span class="step-n">2</span> <strong>Drop bank documents</strong> (you do this in File Explorer)
+      <button class="btn" id="open-folder-btn" type="button" hidden>📁 Open this folder</button></div>
+    <p class="muted">Put each property's bank statement, rec report, deposit slips (in a
+      <code>deposit slips\</code> subfolder) and financial reports into its folder under:</p>
+    <p><code id="droppath">{{ bank_rec_root }}\&lt;Month&gt; Bank Rec\&lt;property&gt;\</code></p>
+  </li>
+  <li>
+    <div class="step-head"><span class="step-n">3</span> <strong>Assemble</strong> one reconciliation PDF per property
+      <button class="btn primary" data-run="assemble">Assemble</button></div>
+  </li>
+  <li>
+    <div class="step-head"><span class="step-n">4</span> <strong>Reconcile</strong> — mark off what cleared
+      <button class="btn primary" data-run="reconcile">Reconcile</button></div>
+  </li>
+</ol>
+
+<section>
+  <p><span id="run-status" class="muted"></span></p>
+  <pre id="run-log" class="log" hidden></pre>
+</section>
+
+<section class="reports">
+  <div class="reports-head">
+    <h2>Assembled reports</h2>
+    <button class="btn small" id="reports-refresh" type="button">Refresh</button>
+  </div>
+  <p class="muted">The reconciliation PDFs produced by <strong>Assemble</strong> for the selected month. Click to view in a new tab.</p>
+  <ul id="reports-list" class="report-list"><li class="muted">Loading…</li></ul>
+</section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  const monthSel = document.getElementById('month');
+  const propSel = document.getElementById('property');
+  const status = document.getElementById('run-status');
+  const logEl = document.getElementById('run-log');
+  const dropPath = document.getElementById('droppath');
+  const openFolderBtn = document.getElementById('open-folder-btn');
+  const reportsList = document.getElementById('reports-list');
+  const destRoot = {{ bank_rec_root|tojson }};
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function reportUrl(file) {
+    return '/reports/view?month=' + encodeURIComponent(monthSel.value) + '&file=' + encodeURIComponent(file);
+  }
+  async function loadReports() {
+    reportsList.innerHTML = '<li class="muted">Loading…</li>';
+    try {
+      const r = await fetch('/api/reports?month=' + encodeURIComponent(monthSel.value));
+      const items = await r.json();
+      if (!items.length) {
+        reportsList.innerHTML = '<li class="muted">No assembled reports for this month yet — run Assemble.</li>';
+        return;
+      }
+      reportsList.innerHTML = items.map(it => {
+        const links = [];
+        if (it.manifest) links.push(`<a href="${reportUrl(it.manifest)}" target="_blank" rel="noopener">manifest</a>`);
+        if (it.matched)  links.push(`<a href="${reportUrl(it.matched)}" target="_blank" rel="noopener">matched.csv</a>`);
+        const extra = links.length ? `<span class="report-extra muted">${links.join(' · ')}</span>` : '';
+        return `<li><a href="${reportUrl(it.pdf)}" target="_blank" rel="noopener">📄 ${escapeHtml(it.property)}</a>`
+             + ` <span class="muted">${it.size_kb} KB</span>${extra}</li>`;
+      }).join('');
+    } catch (e) {
+      reportsList.innerHTML = '<li class="muted">Could not load reports.</li>';
+    }
+  }
+
+  function updatePath() {
+    const prop = propSel.value || '<property>';
+    dropPath.textContent = `${destRoot}\\${monthSel.value} Bank Rec\\${prop}\\`;
+  }
+  monthSel.addEventListener('change', () => { updatePath(); loadReports(); });
+  propSel.addEventListener('change', updatePath);
+  document.getElementById('reports-refresh').addEventListener('click', loadReports);
+  updatePath();
+  loadReports();
+
+  // "Open this folder" — jumps to the staged month/property folder in File Explorer.
+  openFolderBtn.addEventListener('click', async () => {
+    const params = new URLSearchParams({ month: monthSel.value, property: propSel.value });
+    openFolderBtn.disabled = true;
+    try {
+      const r = await fetch('/api/open-folder/bankrec?' + params.toString(), { method: 'POST' });
+      const j = await r.json();
+      if (!j.ok) alert(j.error || 'Could not open the folder.');
+    } catch (e) {
+      alert('Could not reach the app to open the folder.');
+    }
+    setTimeout(() => { openFolderBtn.disabled = false; }, 800);
+  });
+
+  document.querySelectorAll('[data-run]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const step = btn.dataset.run;
+      const params = new URLSearchParams({ month: monthSel.value, property: propSel.value });
+      document.querySelectorAll('[data-run]').forEach(b => b.disabled = true);
+      status.textContent = `Running ${step}…`;
+      logEl.hidden = false;
+      logEl.textContent = '';
+      const es = new EventSource(`/api/run/${step}?` + params.toString());
+      es.addEventListener('log', e => { logEl.textContent += e.data + '\n'; logEl.scrollTop = logEl.scrollHeight; });
+      es.addEventListener('done', e => {
+        status.textContent = e.data === '0' ? `${step} done.` : `${step} exited with code ${e.data}.`;
+        document.querySelectorAll('[data-run]').forEach(b => b.disabled = false);
+        if (step === 'stage' && e.data === '0') openFolderBtn.hidden = false;   // reveal after staging
+        if (step === 'assemble' && e.data === '0') loadReports();               // refresh the report list
+        es.close();
+      });
+      es.onerror = () => {
+        status.textContent = 'Connection dropped.';
+        document.querySelectorAll('[data-run]').forEach(b => b.disabled = false);
+        es.close();
+      };
+    });
+  });
+</script>
+{% endblock %}

@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}Process invoices — Invoice Processor{% endblock %}
+{% block page_title %}Process invoices{% endblock %}
+{% block page_subtitle %}Drop new invoice files and run the processor{% endblock %}
+{% block header_action %}{% endblock %}
+{% block content %}
+<div class="page">
+<p class="lede">Drop invoice PDFs (or images) below, then click <strong>Run</strong>. Each one is
+read by Claude, recorded in the invoice database, and filed under its property.</p>
+
+<section>
+  <div id="dropzone" class="dropzone">
+    <p><strong>Drag &amp; drop</strong> invoice files here</p>
+    <p class="muted">or</p>
+    <p><label class="btn"><input type="file" id="file-input" multiple hidden>Choose files</label></p>
+    <p class="muted">Accepts PDF, PNG, JPG, TIFF, GIF, WebP</p>
+  </div>
+  <div id="upload-status" class="muted"></div>
+</section>
+
+<section>
+  <h2>Waiting to be processed <span id="pending-count" class="pill">{{ files|length }}</span></h2>
+  <ul id="pending-list" class="filelist">
+    {% for f in files %}
+      <li><span>{{ f.name }}</span><span class="muted">{{ f.size_kb }} KB</span></li>
+    {% else %}
+      <li class="muted">No files yet — drop some above.</li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section>
+  <p>
+    <button id="run-btn" class="btn primary" type="button">Run processor</button>
+    <span id="run-status" class="muted"></span>
+  </p>
+  <pre id="run-log" class="log" hidden></pre>
+</section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  const dz = document.getElementById('dropzone');
+  const fi = document.getElementById('file-input');
+  const upStatus = document.getElementById('upload-status');
+  const pendingList = document.getElementById('pending-list');
+  const pendingCount = document.getElementById('pending-count');
+  const runBtn = document.getElementById('run-btn');
+  const runStatus = document.getElementById('run-status');
+  const runLog = document.getElementById('run-log');
+
+  ['dragenter', 'dragover'].forEach(ev =>
+    dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(ev =>
+    dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove('over'); }));
+  dz.addEventListener('drop', e => upload(e.dataTransfer.files));
+  fi.addEventListener('change', () => upload(fi.files));
+
+  async function upload(files) {
+    if (!files || !files.length) return;
+    const fd = new FormData();
+    for (const f of files) fd.append('files', f);
+    upStatus.textContent = `Uploading ${files.length}…`;
+    try {
+      const r = await fetch('/api/upload', { method: 'POST', body: fd });
+      const j = await r.json();
+      let msg = j.count ? `Uploaded ${j.count}: ${j.saved.join(', ')}` : 'Nothing uploaded.';
+      if (j.skipped && j.skipped.length) msg += ` Skipped (unsupported type): ${j.skipped.join(', ')}`;
+      upStatus.textContent = msg;
+      await refreshPending();
+    } catch (err) {
+      upStatus.textContent = `Upload failed: ${err}`;
+    }
+  }
+
+  async function refreshPending() {
+    const r = await fetch('/api/pending-files');
+    const files = await r.json();
+    pendingCount.textContent = files.length;
+    pendingList.innerHTML = files.length
+      ? files.map(f => `<li><span>${escapeHtml(f.name)}</span><span class="muted">${f.size_kb} KB</span></li>`).join('')
+      : '<li class="muted">No files yet — drop some above.</li>';
+  }
+
+  runBtn.addEventListener('click', () => {
+    runBtn.disabled = true;
+    runStatus.textContent = 'Running…';
+    runLog.hidden = false;
+    runLog.textContent = '';
+    const es = new EventSource('/api/run/process');
+    es.addEventListener('log', e => {
+      runLog.textContent += e.data + '\n';
+      runLog.scrollTop = runLog.scrollHeight;
+    });
+    es.addEventListener('done', e => {
+      const rc = e.data;
+      runStatus.textContent = rc === '0' ? 'Done.' : `Exited with code ${rc}.`;
+      runBtn.disabled = false;
+      es.close();
+      refreshPending();
+    });
+    es.onerror = () => {
+      runStatus.textContent = 'Connection dropped.';
+      runBtn.disabled = false;
+      es.close();
+    };
+  });
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+</script>
+{% endblock %}

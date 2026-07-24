@@ -1,0 +1,280 @@
+{% extends "base.html" %}
+{% block title %}Invoices — Invoice Processor{% endblock %}
+{% block page_title %}Invoices{% endblock %}
+{% block page_subtitle %}Every processed invoice — searchable, filterable, editable{% endblock %}
+{% block main_class %}main-fill{% endblock %}
+{% block content %}
+{% set any_filter = q or current_property or current_filter or current_imonth
+                    or current_pmonth or amin or amax or current_sort != sort_options[0][0] %}
+
+<form method="get" class="filterbar">
+  <span class="filter-search">
+    <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8.5" cy="8.5" r="5"/><line x1="12.5" y1="12.5" x2="17" y2="17"/></svg>
+    <input type="search" name="q" value="{{ q }}" placeholder="Search vendor, number, property…"
+           onchange="this.form.submit()">
+  </span>
+  <label class="fld">Sort
+    <select name="sort" onchange="this.form.submit()">
+      {% for value, label in sort_options %}
+        <option value="{{ value }}" {{ 'selected' if current_sort == value }}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="fld">Property
+    <select name="property" onchange="this.form.submit()">
+      <option value="">All</option>
+      {% for p in properties %}
+        <option value="{{ p.name }}" {{ 'selected' if current_property == p.name }}>{{ p.name }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="fld">Show
+    <select name="filter" onchange="this.form.submit()">
+      <option value="" {{ 'selected' if not current_filter }}>All</option>
+      <option value="pending" {{ 'selected' if current_filter == 'pending' }}>Pending</option>
+      <option value="review" {{ 'selected' if current_filter == 'review' }}>Needs review</option>
+      <option value="duplicate" {{ 'selected' if current_filter == 'duplicate' }}>Duplicates</option>
+    </select>
+  </label>
+  <label class="fld">Invoice mo.
+    <select name="imonth" onchange="this.form.submit()">
+      <option value="">All</option>
+      {% for m in invoice_months %}
+        <option value="{{ m.key }}" {{ 'selected' if current_imonth == m.key }}>{{ m.label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="fld">Processed mo.
+    <select name="pmonth" onchange="this.form.submit()">
+      <option value="">All</option>
+      {% for m in processed_months %}
+        <option value="{{ m.key }}" {{ 'selected' if current_pmonth == m.key }}>{{ m.label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="fld">Amount
+    <input type="number" name="amin" value="{{ amin }}" placeholder="min" step="0.01" class="amt"
+           onchange="this.form.submit()">
+    <input type="number" name="amax" value="{{ amax }}" placeholder="max" step="0.01" class="amt"
+           onchange="this.form.submit()">
+  </label>
+  {% if any_filter %}
+    <a class="linkbtn" href="{{ url_for('invoices_page') }}">Clear</a>
+  {% endif %}
+</form>
+
+<div class="table-meta">
+  <div><span class="count">{{ invoices|length }}</span> invoice{{ '' if invoices|length == 1 else 's' }}
+    · tick <strong>Yardi</strong> as you key each in — saves instantly</div>
+</div>
+
+<div class="table-card">
+<table class="invoices">
+  <thead>
+    <tr>
+      <th class="ctr">
+        <input type="checkbox" id="yardi-all" class="yardi" title="Mark all shown as entered in Yardi">
+      </th>
+      <th>Vendor</th>
+      <th>Invoice #</th>
+      <th>Property</th>
+      <th class="num">Amount</th>
+      <th>Check #</th>
+      <th>Invoice date</th>
+      <th>Processed</th>
+      <th>Status</th>
+      <th class="actions-col">Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for inv in invoices %}
+    <tr class="{{ 'dup' if inv.status == 'DUPLICATE' }}">
+      <td class="ctr">
+        <input type="checkbox" class="yardi row-yardi" data-id="{{ inv.id }}" {{ 'checked' if inv.entered_in_yardi }}>
+      </td>
+      <td class="cell-vendor">
+        {% if inv.has_file %}
+          <a href="{{ url_for('invoice_file', invoice_id=inv.id) }}" target="_blank"
+             rel="noopener" title="Open the saved PDF">{{ inv.vendor_name }}</a>
+        {% else %}
+          <span title="No saved file found on disk">{{ inv.vendor_name }}</span>
+          <span class="nofile-tag">no file</span>
+        {% endif %}
+      </td>
+      <td class="mono">{{ inv.invoice_number }}{% if inv.unit %}<span class="muted"> / {{ inv.unit }}</span>{% endif %}</td>
+      <td>{% if inv.property %}{{ inv.property }}{% else %}<span class="prop-none">—</span>{% endif %}</td>
+      <td class="num">{% if inv.amount is not none %}${{ '%.2f'|format(inv.amount) }}{% else %}{{ inv.amount_text }}{% endif %}</td>
+      <td class="mono">{% if inv.check_number %}{{ inv.check_number }}{% else %}<span class="check-none">—</span>{% endif %}</td>
+      <td class="date">{{ inv.invoice_date }}</td>
+      <td class="date soft">{{ inv.date_processed }}</td>
+      <td>
+        {% if inv.status == 'DUPLICATE' %}
+          <div class="dup-status" title="Duplicate — matched {{ inv.matched_fields|join(' + ') }} of the original invoice">
+            <span class="tag red">duplicate</span>
+            {% if inv.duplicate_of %}
+              <a class="dup-of" href="{{ url_for('invoices_page', q=inv.duplicate_of.invoice_number or inv.duplicate_of.vendor_name) }}">of {{ inv.duplicate_of.invoice_number or inv.duplicate_of.vendor_name }}</a>
+            {% endif %}
+          </div>
+          <form method="post" action="{{ url_for('not_duplicate', invoice_id=inv.id) }}" class="dup-clear"
+                onsubmit="return confirm('Mark as NOT a duplicate?\n\nIt will be treated as a real invoice and re-enter the pending pool.');">
+            <button class="btn small" type="submit">Not a dup</button>
+          </form>
+        {% endif %}
+        {% if inv.needs_review %}<span class="tag amber">review</span>{% endif %}
+        {% if inv.reconciled %}<span class="tag green">{{ inv.reconciled }}</span>{% endif %}
+        {% if inv.carried_forward %}<span class="tag">carried</span>{% endif %}
+      </td>
+      <td>
+        <div class="row-actions">
+          {% if inv.has_file %}
+            <button type="button" class="icon-btn reveal-btn" data-id="{{ inv.id }}"
+                    title="Show this file in Windows File Explorer">
+              <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5 h4 l1.4 1.8 H17 v7.5 H3 Z"/></svg>
+            </button>
+          {% endif %}
+          <button type="button" class="icon-btn edit-toggle" data-id="{{ inv.id }}" title="Edit invoice">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16 l.9-3.4 8-8 2.5 2.5-8 8 z"/><line x1="11.5" y1="6.5" x2="14" y2="9"/></svg>
+          </button>
+        </div>
+      </td>
+    </tr>
+    <tr class="editrow" id="edit-{{ inv.id }}" hidden>
+      <td colspan="10">
+        <form method="post" action="{{ url_for('edit_invoice', invoice_id=inv.id) }}" class="edit-panel">
+          <div class="edit-panel-title">Edit invoice</div>
+          <div class="edit-grid">
+            <label>Vendor<input name="vendor_name" value="{{ inv.vendor_name }}"></label>
+            <label>Invoice #<input name="invoice_number" value="{{ inv.invoice_number }}"></label>
+            <label>Unit<input name="unit" value="{{ inv.unit }}"></label>
+            <label>Invoice date<input name="invoice_date" value="{{ inv.invoice_date }}"></label>
+            <label>Amount<input name="amount_text" value="{% if inv.amount is not none %}{{ '%.2f'|format(inv.amount) }}{% else %}{{ inv.amount_text }}{% endif %}"></label>
+            <label>Property
+              <select name="property">
+                <option value="">(none / needs review)</option>
+                {% for p in properties %}
+                  <option value="{{ p.name }}" {{ 'selected' if inv.property == p.name }}>{{ p.name }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>Check #<input name="check_number" value="{{ inv.check_number }}"></label>
+          </div>
+          <div class="edit-actions">
+            <button class="btn primary small" type="submit">Save changes</button>
+            <button class="btn small edit-cancel" type="button" data-id="{{ inv.id }}">Cancel</button>
+            <button class="btn small danger delete-invoice" type="submit"
+                    formaction="{{ url_for('delete_invoice', invoice_id=inv.id) }}"
+                    data-label="{{ inv.vendor_name }} #{{ inv.invoice_number or '--' }}">Delete invoice</button>
+          </div>
+        </form>
+        {% if inv.stored_file %}
+        <form method="post" action="{{ url_for('replace_file', invoice_id=inv.id) }}"
+              enctype="multipart/form-data" class="replace-form"
+              onsubmit="return confirm('Replace the filed PDF for this invoice?\n\nThe record (amount, status, etc.) is kept — only the file is swapped, and the old copy is backed up.');">
+          <span class="replace-title">Replace filed PDF</span>
+          <input type="file" name="file" accept=".{{ inv.stored_file.rsplit('.', 1)[-1] }}" required>
+          <button class="btn small" type="submit">Replace</button>
+          <span class="muted">keeps the record &amp; filename (<span class="mono">{{ inv.stored_file }}</span>); old copy backed up</span>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+  {% else %}
+    <tr><td colspan="10" class="empty">No invoices match these filters.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  const selectAll = document.getElementById('yardi-all');
+  const rowBoxes = [...document.querySelectorAll('.row-yardi')];
+
+  async function saveYardi(cb) {
+    try {
+      const r = await fetch(`/api/invoices/${cb.dataset.id}/yardi`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({entered: cb.checked}),
+      });
+      return r.ok;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function syncSelectAll() {
+    const on = rowBoxes.filter(cb => cb.checked).length;
+    selectAll.checked = rowBoxes.length > 0 && on === rowBoxes.length;
+    selectAll.indeterminate = on > 0 && on < rowBoxes.length;
+  }
+
+  rowBoxes.forEach(cb => {
+    cb.addEventListener('change', async () => {
+      if (!await saveYardi(cb)) {
+        cb.checked = !cb.checked;
+        alert('Could not save.');
+      }
+      syncSelectAll();
+    });
+  });
+
+  // Header checkbox: apply to every row currently shown, one request each (the same endpoint
+  // a single tick uses). Stops at the first failure so the DB and the page stay in step.
+  selectAll.addEventListener('change', async () => {
+    const target = selectAll.checked;
+    const changed = rowBoxes.filter(cb => cb.checked !== target);
+    selectAll.disabled = true;
+    for (const cb of changed) {
+      cb.checked = target;
+      if (!await saveYardi(cb)) {
+        cb.checked = !target;
+        alert('Could not save — stopped part way.');
+        break;
+      }
+    }
+    selectAll.disabled = false;
+    syncSelectAll();
+  });
+
+  document.querySelectorAll('.edit-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const row = document.getElementById('edit-' + btn.dataset.id);
+      row.hidden = !row.hidden;
+      btn.classList.toggle('busy', !row.hidden);
+    });
+  });
+
+  document.querySelectorAll('.edit-cancel').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.getElementById('edit-' + btn.dataset.id).hidden = true;
+      document.querySelector(`.edit-toggle[data-id="${btn.dataset.id}"]`).classList.remove('busy');
+    });
+  });
+
+  document.querySelectorAll('.delete-invoice').forEach(btn => {
+    btn.addEventListener('click', e => {
+      const msg = `Delete this invoice record?\n\n${btn.dataset.label}\n\n` +
+                  `This permanently removes it from the database. The filed PDF file is NOT ` +
+                  `deleted — it stays on disk.`;
+      if (!confirm(msg)) e.preventDefault();
+    });
+  });
+
+  document.querySelectorAll('.reveal-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      btn.classList.add('busy');
+      try {
+        const r = await fetch(`/invoices/${btn.dataset.id}/reveal`, { method: 'POST' });
+        const j = await r.json();
+        if (!j.ok) alert(j.error || 'Could not open the folder.');
+      } catch (e) {
+        alert('Could not reach the app to open the folder.');
+      }
+      setTimeout(() => { btn.classList.remove('busy'); btn.disabled = false; }, 900);
+    });
+  });
+
+  syncSelectAll();
+</script>
+{% endblock %}

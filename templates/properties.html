@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Properties — Invoice Processor{% endblock %}
+{% block page_title %}Properties{% endblock %}
+{% block page_subtitle %}The master list invoices are matched against{% endblock %}
+{% block content %}
+<div class="page">
+<p class="lede">The master list invoices are matched against. Add an address as an
+<strong>alias</strong> (semicolon-separated) so future invoices for that location match automatically.</p>
+
+<div class="panel">
+<table class="props editable">
+  <thead><tr><th>Name</th><th>Code</th><th>Aliases</th><th class="num">Pending</th><th></th></tr></thead>
+  <tbody>
+  {% for p in properties %}
+    <tr>
+      <form method="post" action="{{ url_for('edit_property', prop_id=p.id) }}">
+        <td><input name="canonical_name" value="{{ p.name }}"></td>
+        <td><input name="property_code" value="{{ p.code }}" size="8"></td>
+        <td><input name="aliases" value="{{ p.aliases }}" class="wide"></td>
+        <td class="num">{{ p.pending }}</td>
+        <td class="row-actions">
+          <button class="btn small" type="submit">Save</button>
+      </form>
+          <form method="post" action="{{ url_for('delete_property', prop_id=p.id) }}"
+                onsubmit="return confirm('Delete {{ p.name }}? Invoices keep their property name; only the list entry is removed.');">
+            <button class="btn small danger" type="submit">Delete</button>
+          </form>
+        </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<section>
+  <h2>Add a property</h2>
+  <form method="post" action="{{ url_for('add_property') }}" class="add-form">
+    <input name="canonical_name" placeholder="Canonical name (required)" required>
+    <input name="property_code" placeholder="Code (optional)" size="10">
+    <input name="aliases" placeholder="Aliases; semicolon; separated" class="wide">
+    <button class="btn primary" type="submit">Add</button>
+  </form>
+</section>
+</div>
+{% endblock %}

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Settings — Invoice Processor{% endblock %}
+{% block page_title %}Settings{% endblock %}
+{% block page_subtitle %}API key, current period and data location{% endblock %}
+{% block content %}
+<div class="page">
+
+<section>
+  <h2>Anthropic API key</h2>
+  <p>Status: {% if api_key_present %}<span class="ok">Found</span>{% else %}<span class="warn">Missing</span>{% endif %}</p>
+  <p class="muted">Stored in this app's own <code>.env</code> file:<br><code>{{ env_file }}</code><br>
+  Add a line <code>ANTHROPIC_API_KEY=sk-ant-...</code> (get a key at
+  <a href="https://console.anthropic.com" target="_blank" rel="noopener">console.anthropic.com</a>), then restart the app.</p>
+</section>
+
+<section>
+  <h2>Current month</h2>
+  <form method="post" action="{{ url_for('save_settings_route') }}" class="inline-form">
+    <input type="text" name="month" value="{{ settings.month }}" placeholder="e.g. July 2026">
+    <button class="btn" type="submit">Save</button>
+  </form>
+  <p class="muted">Used as the default period in the month-end close.</p>
+</section>
+
+<section>
+  <h2>Data location</h2>
+  <p class="muted">Everything for this app lives here:<br><code>{{ data_dir }}</code><br>
+  (database, processed invoices, and month-end folders). The original
+  <code>invoice_processor</code> tool is separate and untouched.</p>
+</section>
+
+<section>
+  <h2>Export to Excel</h2>
+  <p class="muted">Optional. Write a styled <code>invoices_export.xlsx</code> snapshot into the
+  data folder — handy if you want to eyeball the log in Excel. The database stays the source of truth.</p>
+  <form method="post" action="{{ url_for('api_export_xlsx') }}">
+    <button class="btn" type="submit">Export snapshot</button>
+  </form>
+</section>
+</div>
+{% endblock %}
