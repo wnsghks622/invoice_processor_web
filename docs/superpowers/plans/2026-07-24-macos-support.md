@@ -661,10 +661,14 @@ In `templates/settings.html`, replace the whole first `<section>` (lines 8-14) w
 
 - [ ] **Step 4: Verify against the running app, without disturbing the real key**
 
-Back up the real `.env` first, then test, then restore:
+Back up the real `.env` **outside the repo** first, then test, then restore. The backup must not
+live in the working tree: `.gitignore` matches `.env` exactly, so a sibling like
+`.env.backup-manual-test` would be committable — a file holding the real API key, in a repo that
+pushes to GitHub.
 
 ```bash
-cp .env .env.backup-manual-test
+BACKUP="$TMPDIR/ipw-env-backup"; [ -n "$TMPDIR" ] || BACKUP="/tmp/ipw-env-backup"
+cp .env "$BACKUP" && echo "backed up to $BACKUP"
 ```
 
 Start the app, open <http://127.0.0.1:5057/settings>, paste `sk-ant-test-0000000000000000`, submit. Then check:
@@ -679,10 +683,12 @@ Expected: `1` from the first command (exactly one key line, no duplicate), and `
 Now restore:
 
 ```bash
-cp .env.backup-manual-test .env && rm .env.backup-manual-test
+cp "$BACKUP" .env && rm -f "$BACKUP"
 ```
 
 Confirm the restore: `python -c "import state; print('key present:', state.api_key_present())"` → `key present: True`
+
+Also confirm no stray env backup landed in the working tree: `git status --short` must not list any `.env*` file.
 
 - [ ] **Step 5: Verify blank and injection input are rejected by the UI**
 
@@ -814,26 +820,31 @@ Append to `tests/test_platform.py`, above the `if __name__` block:
 
 ```python
 class TesseractDiscovery(unittest.TestCase):
+    """Asserts on the exported fallback tuple, not on the function's source text - a source
+    scan would pass on a path that only appears in a comment and break on any refactor."""
+
     def test_homebrew_paths_are_candidates(self):
         # Apple Silicon installs to /opt/homebrew, Intel to /usr/local. shutil.which()
         # covers the PATH case; these fallbacks cover a launcher with a minimal PATH.
         from core import bankrec
-        src = inspect.getsource(bankrec._find_tesseract)
-        self.assertIn("/opt/homebrew/bin/tesseract", src)
-        self.assertIn("/usr/local/bin/tesseract", src)
+        self.assertIn("/opt/homebrew/bin/tesseract", bankrec._TESSERACT_FALLBACK_PATHS)
+        self.assertIn("/usr/local/bin/tesseract", bankrec._TESSERACT_FALLBACK_PATHS)
 
     def test_windows_paths_still_present(self):
         from core import bankrec
-        src = inspect.getsource(bankrec._find_tesseract)
-        self.assertIn(r"C:\Program Files\Tesseract-OCR\tesseract.exe", src)
+        self.assertIn(r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+                      bankrec._TESSERACT_FALLBACK_PATHS)
+
+    def test_fallbacks_are_absolute_paths(self):
+        from core import bankrec
+        for p in bankrec._TESSERACT_FALLBACK_PATHS:
+            self.assertTrue(os.path.isabs(p), p)
 
     def test_returns_none_or_a_real_path(self):
         from core import bankrec
         found = bankrec._find_tesseract()
         self.assertTrue(found is None or os.path.exists(found), found)
 ```
-
-Add `import inspect` to the imports at the top of `tests/test_platform.py`.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -845,20 +856,26 @@ Expected: FAIL on `test_homebrew_paths_are_candidates` — `'/opt/homebrew/bin/t
 In `core/bankrec.py`, replace `_find_tesseract` (lines 48-58) with:
 
 ```python
+# Where tesseract lives when it isn't on PATH. A launcher started from Finder can have a
+# minimal PATH that misses Homebrew, so the macOS locations are listed explicitly.
+_TESSERACT_FALLBACK_PATHS = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
+    "/opt/homebrew/bin/tesseract",        # macOS, Apple Silicon
+    "/usr/local/bin/tesseract",           # macOS, Intel
+    "/opt/local/bin/tesseract",           # macOS, MacPorts
+)
+
+
 def _find_tesseract():
     """Path to the tesseract binary, or None. PATH first (covers Homebrew and the Windows
-    installer when it registered itself), then the usual install locations - a launcher
-    started from Finder can have a minimal PATH that misses Homebrew."""
+    installer when it registered itself), then the known install locations."""
     import shutil
     p = shutil.which("tesseract")
     if p:
         return p
-    for c in (r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-              r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-              os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
-              "/opt/homebrew/bin/tesseract",        # macOS, Apple Silicon
-              "/usr/local/bin/tesseract",           # macOS, Intel
-              "/opt/local/bin/tesseract"):          # macOS, MacPorts
+    for c in _TESSERACT_FALLBACK_PATHS:
         if os.path.exists(c):
             return c
     return None
@@ -879,7 +896,7 @@ with:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m unittest tests.test_platform -v`
-Expected: PASS (12 tests)
+Expected: PASS (13 tests)
 
 - [ ] **Step 5: Verify the processor still imports and the message renders**
 
@@ -902,6 +919,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 **Files:**
 - Create: `.gitattributes`
 - Create: `start.command`
+- Modify: `.gitignore` (widen the `.env` rule)
 - Test: `bash -n` syntax check plus git plumbing checks (Steps 3-5)
 
 **Interfaces:**
@@ -1004,6 +1022,28 @@ open "$URL"
 "$VPY" app.py
 ```
 
+- [ ] **Step 2b: Widen the `.env` rule in `.gitignore`**
+
+The current rule is `.env`, which matches that exact name only — so a sibling backup like
+`.env.backup` or `.env.old` holding a real API key would be committable in a repo that pushes to
+GitHub. In `.gitignore`, replace the line `.env` with:
+
+```
+# Matches .env and any sibling copy (.env.backup, .env.local, ...) - these hold the API key.
+.env
+.env.*
+```
+
+Verify both are covered:
+
+```bash
+touch .env.backup-test && git check-ignore -q .env.backup-test && echo IGNORED || echo NOT-IGNORED
+rm -f .env.backup-test
+git check-ignore -q .env && echo "IGNORED .env" || echo "NOT-IGNORED .env"
+```
+
+Expected: `IGNORED` and `IGNORED .env`.
+
 - [ ] **Step 3: Syntax-check the script (this works on Windows via Git Bash)**
 
 Run: `bash -n start.command`
@@ -1034,7 +1074,11 @@ Simpler equivalent if the stash dance is awkward: `git show :start.command | wc 
 - [ ] **Step 6: Commit**
 
 ```bash
+git add .gitignore
 git commit -m "Add macOS launcher and pin launcher line endings
+
+Also widen the .gitignore .env rule to cover sibling copies, so a backup of
+the key file can't be committed.
 
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 ```
@@ -1164,7 +1208,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 - [ ] **Step 1: Run the full test suite**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: OK. Count should be 26 original + 12 platform (4 file-manager + 5 example-path + 3 Tesseract) + 17 env-writer = **55 tests** (the POSIX permissions test is skipped on Windows).
+Expected: OK. Count should be 26 original + 13 platform (4 file-manager + 5 example-path + 4 Tesseract) + 17 env-writer = **56 tests** (the POSIX permissions test is skipped on Windows).
 
 - [ ] **Step 2: Confirm every page still returns 200**
 
