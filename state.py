@@ -210,6 +210,16 @@ def assembled_output_dir(month: str) -> Path:
     return config.BANK_REC_ROOT / f"{month} Bank Rec" / "_output"
 
 
+def bank_rec_example_path(month: str, property_name: str = "") -> str:
+    """The folder the user drops bank documents into, as a display string for the wizard's
+    hint. Joined with the OS separator - the template used to concatenate backslashes in
+    JavaScript, which reads wrong on macOS."""
+    folder = config.BANK_REC_ROOT / f"{month} Bank Rec"
+    if property_name:
+        folder = folder / ip._safe_folder_name(property_name)
+    return str(folder)
+
+
 def list_assembled_reports(month: str) -> list[dict]:
     """Assembled reconciliation PDFs for a month, one per property, as
     [{property, pdf, manifest, size_kb}] (manifest is None if absent). Newest naming is
