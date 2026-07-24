@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Invoice Processor - Folder + Claude AI + Excel
+Invoice Processor - Folder + Claude AI + SQLite
 Compatible with Windows 10/11, Python 3.8+
 
 Scans a local folder for invoice files (PDFs or images), extracts invoice data from each
-using Claude AI, writes the results to a property-tabbed Excel file (plus an "All Invoices"
-log), and files every processed PDF into processed/<property>/. It also writes a per-property
+using Claude AI, records the results in the app's SQLite database (core/db.py), and files
+every processed PDF into processed/<property>/. It also writes a per-property
 _amounts.csv sidecar that the Bank Rec assembler (bankrec.py) reads, so the two tools share
 verified amounts. See README.md for the full month-end bank-rec workflow.
 """
@@ -21,11 +21,8 @@ import json
 import re
 import shutil
 import anthropic
-import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.datavalidation import DataValidation
-from openpyxl.formatting.rule import CellIsRule, FormulaRule
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict
@@ -51,15 +48,6 @@ BASE_DIR = config.HERE
 # Folder you drop invoices into, and where files are filed once processed - the app's own data/.
 INPUT_FOLDER     = config.INVOICES_TO_PROCESS
 PROCESSED_FOLDER = config.PROCESSED
-
-# Retained only so legacy references resolve; the DB is the source of truth now (nothing is
-# written to this path).
-EXCEL_OUTPUT     = config.DATA_DIR / "invoices.xlsx"
-
-# Property/vendor lists now come from the database (see load_property_list / load_vendor_map,
-# which ignore these paths). Kept as harmless defaults for any old call site.
-PROPERTY_LIST_FILE = config.DATA_DIR / "properties.csv"
-VENDOR_MAP_FILE    = config.DATA_DIR / "vendors.csv"
 
 # Claude model used for extraction. Override in .env (e.g. CLAUDE_MODEL=claude-opus-4-5)
 # without touching the code. Defaults to Haiku 4.5 - the cheapest; step up to a larger
@@ -270,7 +258,7 @@ def extract_invoice_data(
         return []
 
 
-# - EXCEL OUTPUT -
+# - EXCEL EXPORT STYLES (used by db.export_to_xlsx) -
 
 SUMMARY_SHEET = "Summary"
 MASTER_SHEET  = "All Invoices"          # complete log of every invoice ever processed
@@ -333,12 +321,10 @@ THIN_BORDER = Border(
     top=BORDER_SIDE,  bottom=BORDER_SIDE,
 )
 
-# "Entered in Yardi" checkoff column: a one-click check-mark dropdown on every row that
-# turns the cell green once chosen, for tracking which invoices you've keyed into Yardi.
-YARDI_COL       = "Entered in Yardi"
-YARDI_CHECK     = "✓"                                    # check mark
-YARDI_DONE_FILL = PatternFill("solid", start_color="C6EFCE")  # green once checked
-YARDI_DONE_FONT = Font(bold=True, color="006100", name="Arial", size=11)
+# "Entered in Yardi" column - the check mark written for checked-off invoices (used by
+# the on-demand Excel export in db.export_to_xlsx).
+YARDI_COL   = "Entered in Yardi"
+YARDI_CHECK = "✓"                                        # check mark
 
 
 def _sanitize_sheet_name(name: str) -> str:
@@ -390,73 +376,6 @@ def _append_styled_row(ws, header, values, duplicate=False) -> None:
         cell.font      = DUP_FONT
         cell.alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[row_num].height = 18
-
-
-def _add_yardi_checkoff(ws, header) -> None:
-    """
-    Turn the 'Entered in Yardi' column into a click-to-check column: a dropdown whose only
-    value is a check mark, plus a green highlight once it's chosen. Applied to the whole
-    column so every current and future row has it. Typing is still allowed (no error popup).
-    """
-    if YARDI_COL not in header:
-        return
-    col = get_column_letter(header.index(YARDI_COL) + 1)
-    rng = f"{col}2:{col}1048576"
-    dv = DataValidation(type="list", formula1=f'"{YARDI_CHECK}"', allow_blank=True)
-    dv.showErrorMessage = False
-    ws.add_data_validation(dv)
-    dv.add(rng)
-    ws.conditional_formatting.add(
-        rng,
-        CellIsRule(operator="equal", formula=[f'"{YARDI_CHECK}"'],
-                   fill=YARDI_DONE_FILL, font=YARDI_DONE_FONT),
-    )
-
-
-def ensure_columns(ws, header, widths=None) -> None:
-    """
-    Append any header columns missing from an existing sheet (label + width), so a sheet
-    created before a column was added still gains it. Rows are appended by position, so new
-    columns must go at the END - this brings older sheets up to the current header without
-    shifting their data. Name-based and idempotent (running it twice is a no-op).
-    """
-    have = [c.value for c in ws[1]]
-    for name in header:
-        if name in have:
-            continue
-        col = len(have) + 1
-        c = ws.cell(row=1, column=col, value=name)
-        c.font, c.fill, c.border = HEADER_FONT, HEADER_FILL, THIN_BORDER
-        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        if widths:
-            ws.column_dimensions[get_column_letter(col)].width = widths[header.index(name)]
-        have.append(name)
-
-
-def _get_or_create_master_sheet(wb):
-    if MASTER_SHEET in wb.sheetnames:
-        return wb[MASTER_SHEET]
-    idx = 1 if SUMMARY_SHEET in wb.sheetnames else 0
-    ws = wb.create_sheet(title=MASTER_SHEET, index=idx)
-    _style_header_row(ws, MASTER_HEADER)
-    _set_col_widths(ws, MASTER_WIDTHS)
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(MASTER_HEADER))}1"
-    _add_yardi_checkoff(ws, MASTER_HEADER)
-    return ws
-
-
-def _get_or_create_property_sheet(wb, property_name: str):
-    sheet_name = _sanitize_sheet_name(property_name or "Unknown Property")
-    if sheet_name in wb.sheetnames:
-        return wb[sheet_name]
-    ws = wb.create_sheet(title=sheet_name)
-    _style_header_row(ws, PROPERTY_HEADER)
-    _set_col_widths(ws, PROPERTY_WIDTHS)
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(PROPERTY_HEADER))}1"
-    _add_yardi_checkoff(ws, PROPERTY_HEADER)
-    return ws
 
 
 # Date formats Claude may return (prompt asks for MM/DD/YYYY "or as written")
@@ -596,44 +515,6 @@ def data_merge_unit(keep, extra):
     return keep
 
 
-def build_seen_index(wb) -> set:
-    """
-    Collect the duplicate keys already in the master log, so duplicates are caught across
-    runs - not just within a single run. Columns are looked up by header name, so this keeps
-    working even if older sheets have a different column layout. The key is rebuilt with the
-    same logic write_invoice() uses - including the property/amount disambiguation for
-    date-based numbers - so a saved row and a freshly-read invoice compare identically.
-    """
-    seen = set()
-    if MASTER_SHEET not in wb.sheetnames:
-        return seen
-    ws = wb[MASTER_SHEET]
-    header = [c.value for c in ws[1]]
-    idx = {name: header.index(name) for name in (
-        "Vendor Name", "Invoice #", "Unit", "Invoice Date", "Due Date", "Property", "Amount",
-    ) if name in header}
-    if "Vendor Name" not in idx or "Invoice #" not in idx:
-        return seen
-
-    def cell(row, name):
-        i = idx.get(name)
-        return row[i] if (i is not None and i < len(row)) else ""
-
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if not row:
-            continue
-        invno      = cell(row, "Invoice #")
-        date_based = _is_date_based_number(invno, cell(row, "Invoice Date"), cell(row, "Due Date"))
-        key = _invoice_key(
-            str(cell(row, "Vendor Name") or ""), str(invno or ""), str(cell(row, "Unit") or ""),
-            property_name=str(cell(row, "Property") or ""), amount=cell(row, "Amount"),
-            date_based=date_based,
-        )
-        if key:
-            seen.add(key)
-    return seen
-
-
 def _parse_amount(value):
     """Parse a money value like '$1,228.50' into a float, or None if not a clean number."""
     if value is None:
@@ -725,272 +606,6 @@ def write_invoice(data: Dict, source_file: str, seen: set, date_processed: str =
     return status, vendor, invoice_no
 
 
-# Summary-dashboard cell styles
-DASH_TITLE_FONT   = Font(bold=True, size=16, name="Arial", color="1F3864")
-DASH_SUB_FONT     = Font(italic=True, size=10, name="Arial", color="666666")
-DASH_SECTION_FONT = Font(bold=True, size=11, name="Arial", color="FFFFFF")
-DASH_LABEL_FONT   = Font(size=11, name="Arial")
-DASH_VALUE_FONT   = Font(bold=True, size=12, name="Arial", color="1F3864")
-DASH_BANNER_FONT  = Font(bold=True, size=13, name="Arial")
-GOOD_FILL = PatternFill("solid", start_color="C6EFCE")            # green - caught up
-GOOD_FONT = Font(bold=True, color="006100", name="Arial", size=12)
-WARN_FILL = PatternFill("solid", start_color="FFC7CE")            # red - still outstanding
-WARN_FONT = Font(bold=True, color="9C0006", name="Arial", size=12)
-AMBER_FILL = PatternFill("solid", start_color="FFEB9C")           # amber banner - action needed
-AMBER_FONT = Font(bold=True, color="9C6500", name="Arial", size=13)
-GOOD_BANNER_FONT = Font(bold=True, color="006100", name="Arial", size=13)
-
-
-def _init_summary_sheet(ws) -> None:
-    """Minimal placeholder. refresh_summary_dashboard() rebuilds this tab into the full
-    dashboard at the end of every run; this only avoids a blank tab if a run aborts first."""
-    ws["A1"] = "Invoice Tracker — Daily Dashboard"
-    ws["A1"].font = DASH_TITLE_FONT
-    ws["A2"] = "Run the processor to populate this dashboard."
-    ws["A2"].font = DASH_SUB_FONT
-    ws.column_dimensions["A"].width = 34
-
-
-def _countif_literal(text: str) -> str:
-    """Escape COUNTIF/SUMIF wildcards so a property name containing * ? ~ matches literally."""
-    return re.sub(r"([~*?])", r"~\1", str(text))
-
-
-def _distinct_properties_in_master(wb) -> list:
-    """Property names that have at least one non-duplicate invoice in the master log, in the
-    exact spelling stored there (so the dashboard COUNTIFs match), sorted case-insensitively."""
-    if MASTER_SHEET not in wb.sheetnames:
-        return []
-    ws = wb[MASTER_SHEET]
-    header = [c.value for c in ws[1]]
-    si = header.index("Status")   if "Status"   in header else None
-    pi = header.index("Property")  if "Property" in header else None
-    if pi is None:
-        return []
-    names, seen = [], set()
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if not row:
-            continue
-        status = row[si] if (si is not None and si < len(row)) else "OK"
-        if status == "DUPLICATE":
-            continue
-        prop = row[pi] if pi < len(row) else None
-        name = str(prop).strip() if prop else ""
-        if name and name not in seen:
-            seen.add(name)
-            names.append(name)
-    names.sort(key=str.lower)
-    return names
-
-
-def refresh_summary_dashboard(wb, run_date: str) -> None:
-    """
-    Rebuild the Summary tab into a live "did everything I processed get into Yardi?" board.
-    Every count is an Excel FORMULA over the 'All Invoices' log, so it updates the instant you
-    tick an 'Entered in Yardi' box in Excel - no need to re-run the script to see progress.
-    Only first-time invoices (Status 'OK') count as work to enter; duplicates are ignored.
-    """
-    _get_or_create_master_sheet(wb)        # guarantee 'All Invoices' exists so formulas resolve
-
-    # Column letters come from MASTER_HEADER so the formulas survive a future column reorder.
-    sc = get_column_letter(MASTER_HEADER.index("Status") + 1)
-    ac = get_column_letter(MASTER_HEADER.index("Amount") + 1)
-    pc = get_column_letter(MASTER_HEADER.index("Property") + 1)
-    dc = get_column_letter(MASTER_HEADER.index("Date Processed") + 1)
-    yc = get_column_letter(MASTER_HEADER.index("Entered in Yardi") + 1)
-    M   = f"'{MASTER_SHEET}'"
-    chk = YARDI_CHECK
-    col = lambda c: f"{M}!${c}:${c}"                  # whole column (COUNTIF/SUMIFS)
-    rng = lambda c: f"{M}!${c}$2:${c}$100000"         # bounded (SUMPRODUCT, for text-date match)
-
-    properties = _distinct_properties_in_master(wb)
-
-    # Rebuild from scratch so a shrinking property list never leaves stale rows behind.
-    if SUMMARY_SHEET in wb.sheetnames:
-        del wb[SUMMARY_SHEET]
-    ws = wb.create_sheet(SUMMARY_SHEET, 0)
-    ws.sheet_view.showGridLines = False
-    ws.column_dimensions["A"].width = 34
-    ws.column_dimensions["B"].width = 14
-    ws.column_dimensions["C"].width = 12
-
-    def section(row, text):
-        ws.merge_cells(f"A{row}:C{row}")
-        c = ws[f"A{row}"]
-        c.value, c.font, c.fill = text, DASH_SECTION_FONT, HEADER_FILL
-        c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-        ws.row_dimensions[row].height = 20
-
-    def metric(row, label, formula, *, currency=False):
-        a = ws[f"A{row}"]
-        a.value, a.font = label, DASH_LABEL_FONT
-        a.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-        b = ws[f"B{row}"]
-        b.value, b.font = formula, DASH_VALUE_FONT
-        b.alignment = Alignment(horizontal="center", vertical="center")
-        if currency:
-            b.number_format = '$#,##0.00'
-        return b
-
-    ws["A1"] = "Invoice Tracker — Daily Dashboard"
-    ws["A1"].font = DASH_TITLE_FONT
-    ws.row_dimensions[1].height = 24
-    ws["A2"] = f"Last run: {datetime.today().strftime('%B %d, %Y %I:%M %p')}"
-    ws["A2"].font = DASH_SUB_FONT
-
-    # Status banner - green when caught up, amber when something is still to enter. It reads
-    # the 'still to enter (all dates)' number in B11, so it flips live as you tick boxes.
-    ws.merge_cells("A4:C4")
-    banner = ws["A4"]
-    banner.value = (
-        '=IF($B$11=0,'
-        '"✓  All caught up — every processed invoice is entered in Yardi",'
-        '"⚠  "&$B$11&" invoice(s) still to enter in Yardi (see below)")'
-    )
-    banner.font = DASH_BANNER_FONT
-    banner.alignment = Alignment(horizontal="center", vertical="center")
-    ws.row_dimensions[4].height = 30
-    ws.conditional_formatting.add("A4:C4",
-        FormulaRule(formula=["$B$11=0"], fill=GOOD_FILL, font=GOOD_BANNER_FONT))
-    ws.conditional_formatting.add("A4:C4",
-        FormulaRule(formula=["$B$11>0"], fill=AMBER_FILL, font=AMBER_FONT))
-
-    # This run. Date Processed is stored as TEXT, so these use SUMPRODUCT with a text compare;
-    # COUNTIF would coerce "06/03/2026" to a date serial and match nothing.
-    section(6, f"This run — processed {run_date}")
-    metric(7, "Invoices processed",
-           f'=SUMPRODUCT(({rng(sc)}="OK")*({rng(dc)}="{run_date}"))')
-    today_left = metric(8, "Still to enter in Yardi",
-           f'=SUMPRODUCT(({rng(sc)}="OK")*({rng(dc)}="{run_date}")*({rng(yc)}<>"{chk}"))')
-
-    # Overall.
-    section(10, "Overall — Yardi entry")
-    overall_left = metric(11, "Still to enter (all dates)",
-           f'=COUNTIF({col(sc)},"OK")-COUNTIFS({col(sc)},"OK",{col(yc)},"{chk}")')
-    metric(12, "Amount still to enter",
-           f'=SUMIFS({col(ac)},{col(sc)},"OK")-SUMIFS({col(ac)},{col(sc)},"OK",{col(yc)},"{chk}")',
-           currency=True)
-    metric(13, "Already entered in Yardi",
-           f'=COUNTIFS({col(sc)},"OK",{col(yc)},"{chk}")')
-    metric(14, "Total invoices (excl. duplicates)", f'=COUNTIF({col(sc)},"OK")')
-
-    # Color the two "still to enter" numbers: green at 0, red above 0.
-    for ref in (today_left.coordinate, overall_left.coordinate):
-        ws.conditional_formatting.add(ref,
-            CellIsRule(operator="equal", formula=["0"], fill=GOOD_FILL, font=GOOD_FONT))
-        ws.conditional_formatting.add(ref,
-            CellIsRule(operator="greaterThan", formula=["0"], fill=WARN_FILL, font=WARN_FONT))
-
-    # Per-property breakdown - where the outstanding work is.
-    section(16, "Outstanding by property")
-    for i, title in enumerate(("Property", "To enter", "Total")):
-        c = ws.cell(row=17, column=i + 1, value=title)
-        c.font, c.fill = HEADER_FONT, HEADER_FILL
-        c.alignment = Alignment(horizontal="left" if i == 0 else "center", vertical="center")
-    ws.row_dimensions[17].height = 18
-
-    r = 18
-    for name in properties:
-        lit = _countif_literal(name)
-        a = ws.cell(row=r, column=1, value=name)
-        a.font = DASH_LABEL_FONT
-        a.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-        b = ws.cell(row=r, column=2,
-            value=f'=COUNTIFS({col(sc)},"OK",{col(pc)},"{lit}")-'
-                  f'COUNTIFS({col(sc)},"OK",{col(pc)},"{lit}",{col(yc)},"{chk}")')
-        t = ws.cell(row=r, column=3, value=f'=COUNTIFS({col(sc)},"OK",{col(pc)},"{lit}")')
-        for cell in (b, t):
-            cell.font = DASH_LABEL_FONT
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-        ws.conditional_formatting.add(b.coordinate,
-            CellIsRule(operator="greaterThan", formula=["0"], fill=WARN_FILL, font=WARN_FONT))
-        r += 1
-    if not properties:
-        ws.cell(row=r, column=1, value="(no invoices logged yet)").font = DASH_SUB_FONT
-
-
-def load_or_create_workbook(path) -> openpyxl.Workbook:
-    """Load the existing workbook or create a fresh one. Always ensures a Summary tab."""
-    if Path(path).exists():
-        wb = openpyxl.load_workbook(path)
-        if SUMMARY_SHEET not in wb.sheetnames:
-            _init_summary_sheet(wb.create_sheet(SUMMARY_SHEET, 0))
-        return wb
-
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = SUMMARY_SHEET
-    _init_summary_sheet(ws)
-    return wb
-
-
-def migrate_vendor_tabs_if_needed(wb, path, properties):
-    """
-    One-time upgrade for spreadsheets from the old layout (one tab per vendor, no master
-    log). Re-files those rows into the new property tabs + 'All Invoices' log, backing up
-    the original file first. Each row's property is re-validated against `properties`, so an
-    old value that isn't a real property lands on the Needs Review tab. Returns
-    (migrated_count, backup_path_or_None, review_count).
-    """
-    if MASTER_SHEET in wb.sheetnames:
-        return 0, None, 0                    # already new layout - nothing to do
-
-    old_sheets = [s for s in wb.sheetnames if s not in RESERVED_SHEETS]
-    _get_or_create_master_sheet(wb)          # create the master log
-    if not old_sheets:
-        return 0, None, 0
-
-    # Back up the original file before restructuring it.
-    backup = None
-    src = Path(path)
-    if src.exists():
-        stamp  = datetime.today().strftime("%Y%m%d_%H%M%S")
-        backup = src.with_name(f"{src.stem}_backup_{stamp}{src.suffix}")
-        try:
-            shutil.copy2(src, backup)
-        except OSError:
-            backup = None
-
-    # Old per-vendor columns: Vendor, Invoice#, InvDate, DueDate, Desc, Property, Source, Processed
-    seen = set()
-    migrated = 0
-    reviews  = 0
-    for name in old_sheets:
-        for row in wb[name].iter_rows(min_row=2, values_only=True):
-            if not row or not any(v not in (None, "") for v in row):
-                continue
-            cells = list(row) + [""] * 8                 # pad short rows
-            data = {
-                "vendor_name":    cells[0],
-                "invoice_number": cells[1],
-                "invoice_date":   cells[2],
-                "due_date":       cells[3],
-                "description":    cells[4],
-                "property":       cells[5],
-            }
-            source_file    = cells[6] or ""
-            date_processed = cells[7] or datetime.today().strftime("%m/%d/%Y")
-
-            # Re-validate the stored property against the current list (strict).
-            canonical = match_property(data.get("property"), properties)
-            tab = None
-            if canonical:
-                data["property"] = canonical
-            elif properties:
-                data["property"] = (str(cells[5]).strip() or "(none found)")
-                tab = PROPERTY_REVIEW_TAB
-                reviews += 1
-
-            write_invoice(wb, data, source_file, seen,
-                          date_processed=date_processed, property_tab=tab)
-            migrated += 1
-
-    for name in old_sheets:                              # drop the old vendor tabs
-        del wb[name]
-
-    return migrated, backup, reviews
-
-
 # - FILE TYPE DETECTION -
 
 EXTENSION_MAP = {
@@ -1078,22 +693,6 @@ def move_to_processed(src: Path, subfolder: str = "", final_name: str = None) ->
     return dest
 
 
-def is_output_locked(path) -> bool:
-    """
-    True if the spreadsheet exists but can't be opened for writing (typically because it's
-    open in Excel). Lets us warn up front instead of failing the save after files have
-    already been moved.
-    """
-    p = Path(path)
-    if not p.exists():
-        return False
-    try:
-        with open(p, "r+b"):
-            return False
-    except (PermissionError, OSError):
-        return True
-
-
 # - AMOUNT SIDECAR (handoff to the Bank Rec Auto-Assembler) -
 
 SIDECAR_NAME   = "_amounts.csv"
@@ -1106,72 +705,6 @@ def _write_sidecar(folder: Path, rows: list) -> None:
         w = csv.DictWriter(fh, fieldnames=SIDECAR_HEADER)
         w.writeheader()
         w.writerows(rows)
-
-
-def export_amount_sidecars(wb, processed_root: Path) -> int:
-    """
-    Refresh processed/<property>/_amounts.csv for the PENDING pool - every non-duplicate,
-    not-yet-reconciled invoice that has a filed (stored) name - so the Bank Rec assembler can
-    read each invoice's verified amount instead of OCR-ing it. Keyed on the stored filename
-    the assembler sees; a multi-bill PDF appears as several rows sharing one stored_file. A
-    property whose pool is now empty gets a header-only sidecar so already-reconciled files
-    stop being re-staged. Returns the number of sidecars written with pending rows.
-    """
-    if MASTER_SHEET not in wb.sheetnames:
-        return 0
-    ws = wb[MASTER_SHEET]
-    header = [c.value for c in ws[1]]
-    idx = {n: header.index(n) for n in (
-        "Status", "Stored File", "Amount", "Vendor Name", "Invoice #", "Unit",
-        "Invoice Date", "Property", "Source File", "Reconciled", "Check #") if n in header}
-    if "Stored File" not in idx or "Property" not in idx:
-        return 0   # nothing to key on yet (e.g. an old sheet before ensure_columns ran)
-
-    def cell(row, name):
-        i = idx.get(name)
-        return row[i] if (i is not None and i < len(row)) else ""
-
-    by_safe = {}
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if not row or str(cell(row, "Status") or "OK") == "DUPLICATE":
-            continue
-        if str(cell(row, "Reconciled") or "").strip():        # already reconciled -> not pending
-            continue
-        stored = str(cell(row, "Stored File") or "").strip()
-        prop   = str(cell(row, "Property") or "").strip()
-        if not stored or not prop:
-            continue
-        amt = _parse_amount(cell(row, "Amount"))
-        by_safe.setdefault(_safe_folder_name(prop), []).append({
-            "stored_file":    stored,
-            "amount":         f"{amt:.2f}" if amt is not None else "",
-            "vendor":         str(cell(row, "Vendor Name") or "").strip(),
-            "invoice_number": str(cell(row, "Invoice #") or "").strip(),
-            "unit":           str(cell(row, "Unit") or "").strip(),
-            "invoice_date":   str(cell(row, "Invoice Date") or "").strip(),
-            "property":       prop,
-            "source_file":    str(cell(row, "Source File") or "").strip(),
-            "check_number":   re.sub(r"[^0-9]", "", str(cell(row, "Check #") or "")),
-        })
-
-    written, refreshed = 0, set()
-    for safe, rows in by_safe.items():
-        folder = processed_root / safe
-        if not folder.exists():
-            continue
-        try:
-            _write_sidecar(folder, rows)
-            written += 1
-            refreshed.add(folder.resolve())
-        except OSError as exc:
-            print(f"  [!] Could not write {SIDECAR_NAME} for '{safe}' ({exc})")
-    for sc in processed_root.glob("*/" + SIDECAR_NAME):        # empty out stale sidecars
-        if sc.parent.resolve() not in refreshed:
-            try:
-                _write_sidecar(sc.parent, [])
-            except OSError:
-                pass
-    return written
 
 
 # - PROPERTY NORMALIZATION -
@@ -1193,8 +726,8 @@ def _normalize_key(text: str) -> str:
 def load_property_list(path=None) -> list:
     """
     Property list as [(canonical_name, {normalized_keys}, [alias_text, ...]), ...] - now sourced
-    from the database (the DB is the single source of truth). `path` is ignored, kept so existing
-    call sites (which pass PROPERTY_LIST_FILE) work unchanged.
+    from the database (the DB is the single source of truth). `path` is ignored (kept for
+    call-site compatibility).
     """
     return db.load_property_list()
 

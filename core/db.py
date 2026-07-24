@@ -15,7 +15,9 @@ touches `ip.*` at module-load time - the processor helpers are only used inside 
 """
 from __future__ import annotations
 
+import datetime
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -92,12 +94,21 @@ CREATE INDEX IF NOT EXISTS idx_invoices_reconciled ON invoices(reconciled);
 
 # --------------------------------------------------------------------------- connection
 
-def _connect() -> sqlite3.Connection:
+@contextmanager
+def _connect():
+    """One short-lived connection per operation: commits on success, rolls back on error,
+    always closes. WAL + a busy timeout let the web app and a running job read/write
+    concurrently without 'database is locked' errors."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    conn.execute("PRAGMA journal_mode = WAL")
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def init() -> None:
@@ -112,6 +123,32 @@ def is_empty() -> bool:
         return True
     with _connect() as conn:
         return conn.execute("SELECT COUNT(*) FROM invoices").fetchone()[0] == 0
+
+
+def backup_db(keep: int = 14):
+    """Write a date-stamped safety copy of the database into data/backups/ (at most one
+    per day; the newest `keep` are kept). Uses SQLite's online-backup API, so it's safe
+    even if something else has the DB open. Returns the new backup's Path, or None if the
+    DB doesn't exist yet or today's backup was already made."""
+    if not DB_PATH.exists():
+        return None
+    bdir = DB_PATH.parent / "backups"
+    bdir.mkdir(parents=True, exist_ok=True)
+    dest = bdir / f"invoices-{datetime.date.today():%Y%m%d}.db"
+    if dest.exists():
+        return None
+    out = sqlite3.connect(str(dest))
+    try:
+        with _connect() as conn:
+            conn.backup(out)
+    finally:
+        out.close()
+    for old in sorted(bdir.glob("invoices-*.db"))[:-keep]:   # prune beyond the newest N
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    return dest
 
 
 # --------------------------------------------------------------------------- properties
@@ -226,7 +263,7 @@ def insert_invoice(rec: dict) -> int:
 def seen_index() -> set:
     """
     Duplicate keys already recorded, rebuilt with the SAME logic write_invoice() uses, so a
-    freshly-read invoice compares identically to a stored row (mirrors build_seen_index()).
+    freshly-read invoice compares identically to a stored row.
     """
     seen = set()
     with _connect() as conn:
@@ -332,32 +369,6 @@ def pending_by_property() -> dict[str, int]:
 
 
 # ------------------------------------------------------ reconcile / reassign / cleanup support
-
-def mark_reconciled(property: str, stored_file: str, period: str) -> int:
-    """Stamp reconciled=<period> and clear carried_forward for matching non-dup rows that
-    aren't already reconciled. Matched case-insensitively on (property, stored_file). Returns
-    rows updated."""
-    with _connect() as conn:
-        cur = conn.execute(
-            "UPDATE invoices SET reconciled=?, carried_forward='' "
-            "WHERE status!='DUPLICATE' AND COALESCE(reconciled,'')='' "
-            "AND lower(property)=lower(?) AND lower(stored_file)=lower(?)",
-            (period, property, stored_file),
-        )
-        return cur.rowcount
-
-
-def set_carried_forward(property: str, stored_file: str, period: str) -> int:
-    """Flag rows that were in a rec but didn't clear (only when not already reconciled)."""
-    with _connect() as conn:
-        cur = conn.execute(
-            "UPDATE invoices SET carried_forward=? "
-            "WHERE status!='DUPLICATE' AND COALESCE(reconciled,'')='' "
-            "AND lower(property)=lower(?) AND lower(stored_file)=lower(?)",
-            (period, property, stored_file),
-        )
-        return cur.rowcount
-
 
 def reassign_property(invoice_id: int, new_property: str, new_stored_file: str = None) -> None:
     """Move a Needs-Review invoice to its real property and clear the flag."""

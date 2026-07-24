@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime
 import shutil
 from pathlib import Path
+from urllib.parse import urlparse
 
 from flask import (
     Flask, render_template, request, redirect, url_for, jsonify, Response,
@@ -24,6 +25,21 @@ app.secret_key = "invoice-processor-local"        # only for flash messages on l
 app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024
 
 db.init()   # ensure schema exists on startup
+
+
+@app.before_request
+def _reject_cross_site():
+    """Localhost-only app, but any web page the user visits can still make their browser fire
+    requests at 127.0.0.1:5057 - a drive-by <img>/EventSource/form-POST could run jobs or
+    delete records. Browsers label such requests (Sec-Fetch-Site: cross-site, or a foreign
+    Origin header); reject them. Same-origin use and curl (no such headers) are unaffected."""
+    if request.headers.get("Sec-Fetch-Site", "").lower() == "cross-site":
+        abort(403)
+    origin = request.headers.get("Origin")
+    if origin:
+        host = (urlparse(origin).hostname or "").lower()
+        if host not in ("127.0.0.1", "localhost"):
+            abort(403)
 
 
 @app.context_processor
@@ -547,9 +563,23 @@ def not_found(e):
     return render_template("error.html", message="Page not found."), 404
 
 
+@app.errorhandler(403)
+def forbidden(e):
+    return render_template(
+        "error.html",
+        message="Blocked: this request came from another website, not from the app itself.",
+    ), 403
+
+
 def main():
     print(f"invoice_processor_web  ->  http://127.0.0.1:{config.PORT}/")
     print(f"database:  {config.DB_PATH}")
+    try:
+        b = db.backup_db()
+        if b:
+            print(f"backup:    {b.name}  (daily copy in data\\backups, newest 14 kept)")
+    except Exception as e:                         # a failed backup must never block startup
+        print(f"  [!] Daily DB backup failed: {e}")
     if db.is_empty():
         print("  [!] The database is empty - run  python migrate_to_db.py  to import your data.")
     app.run(host="127.0.0.1", port=config.PORT, debug=False, use_reloader=False)
