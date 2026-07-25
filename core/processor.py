@@ -1114,7 +1114,7 @@ def main():
 
     print("\n" + sep)
     print(f"  Done!  {total_logged} invoice(s) recorded to the database")
-    print(f"         {moved} file(s) moved to '{PROCESSED_FOLDER.name}\\<property>'")
+    print(f"         {moved} file(s) moved to '{os.path.join(PROCESSED_FOLDER.name, '<property>')}'")
     if sidecars:
         print(f"         {sidecars} amount sidecar(s) refreshed ('{SIDECAR_NAME}' per property)")
     if duplicates:

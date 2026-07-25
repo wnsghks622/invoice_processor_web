@@ -45,14 +45,26 @@ try:
 except Exception:
     _OCR_LIBS = False
 
+# Where tesseract lives when it isn't on PATH. A launcher started from Finder can have a
+# minimal PATH that misses Homebrew, so the macOS locations are listed explicitly.
+_TESSERACT_FALLBACK_PATHS = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
+    "/opt/homebrew/bin/tesseract",        # macOS, Apple Silicon
+    "/usr/local/bin/tesseract",           # macOS, Intel
+    "/opt/local/bin/tesseract",           # macOS, MacPorts
+)
+
+
 def _find_tesseract():
+    """Path to the tesseract binary, or None. PATH first (covers Homebrew and the Windows
+    installer when it registered itself), then the known install locations."""
     import shutil
     p = shutil.which("tesseract")
     if p:
         return p
-    for c in (r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-              r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-              os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe")):
+    for c in _TESSERACT_FALLBACK_PATHS:
         if os.path.exists(c):
             return c
     return None
