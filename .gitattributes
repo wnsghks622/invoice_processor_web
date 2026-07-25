@@ -1,0 +1,7 @@
+# The macOS launcher must keep LF endings and its shebang intact. A CRLF shebang fails on
+# macOS with: bad interpreter: /bin/bash^M
+*.command text eol=lf
+*.sh      text eol=lf
+
+# The Windows launcher is the mirror image - it needs CRLF.
+*.bat     text eol=crlf
