@@ -24,6 +24,9 @@ if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   echo "Invoice Processor is already running - opening it in your browser."
   echo "If you just changed the code, close the other Terminal window first, then run this again."
   open "$URL"
+  echo ""
+  echo "Press any key to close this window."
+  read -r -n 1 -s
   exit 0
 fi
 
@@ -35,6 +38,9 @@ if ! command -v python3 >/dev/null 2>&1; then
   Download it from https://www.python.org/downloads/macos/ (get the latest 3.x),
   run the installer, then double-click this file again."
 fi
+
+echo "Checking Python..."
+echo "(macOS may now ask to install developer tools - if it does, click Install and wait; this can take a few minutes.)"
 
 if ! PYVER="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)"; then
   fail "Python 3 is not fully installed yet.
@@ -52,11 +58,14 @@ fi
 # Create the virtual environment on first run.
 if [ ! -d ".venv" ]; then
   echo "First run: setting up. This takes a couple of minutes..."
-  python3 -m venv .venv || fail "Could not create the virtual environment (.venv)."
+  python3 -m venv .venv || fail "Could not create the virtual environment (.venv).
+  Make sure this Mac has a few hundred MB of free disk space, then double-click this file again."
 fi
 
 VPY=".venv/bin/python"
-[ -x "$VPY" ] || fail "The .venv folder looks damaged. Delete it and double-click this file again."
+[ -x "$VPY" ] || fail "The .venv folder looks damaged.
+  In Finder, press Cmd+Shift+. (period) to show hidden files, open this project folder,
+  delete the .venv folder, then double-click this file again."
 
 # Install dependencies if anything is missing.
 if ! "$VPY" -c "import flask, anthropic, openpyxl, pypdf, dotenv" >/dev/null 2>&1; then
