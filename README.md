@@ -16,8 +16,8 @@ to the Anthropic API for extraction.
   during install, tick **"Add Python to PATH"**.
 - **An Anthropic API key** — [console.anthropic.com](https://console.anthropic.com). Extraction calls cost money
   per invoice; the default model is Haiku, the cheapest.
-- **Windows** for the one-click `start.bat` launcher and the "show file in Explorer" buttons. The app
-  itself also runs on macOS/Linux — start it with `python app.py` instead.
+- **Windows or macOS.** Windows users double-click `start.bat`; macOS users double-click
+  `start.command`. The app also runs on Linux via `python app.py`, though that is untested.
 - **Tesseract OCR** — *optional*. Only used for scanned deposit slips and invoices that have no text
   layer. Without it those files fall back to their filename amount and get flagged for review.
   Windows installer: [UB-Mannheim/tesseract](https://github.com/UB-Mannheim/tesseract/wiki).
@@ -85,6 +85,35 @@ checks dependencies and opens the browser for you.
 
 On first run the app creates its `data/` folder and an empty database, so every page works
 immediately — you just won't have any invoices or properties yet.
+
+### macOS notes
+
+Steps 1–4 above are the same on a Mac. Two differences:
+
+- Use `python3` everywhere the steps say `python`. macOS has no `python` command.
+  Activate the virtual environment with `source .venv/bin/activate`.
+- Instead of `start.bat`, double-click **`start.command`** in Finder. On first run it creates
+  the virtual environment and installs everything for you.
+
+If `start.command` opens in a text editor instead of running it, its executable bit was lost —
+restore it with:
+
+```bash
+chmod +x start.command
+```
+
+**API key:** rather than editing the hidden `.env` file (Finder hides dotfiles), open the
+**Settings** page in the app and paste the key into the API key field.
+
+**OCR (optional):** scanned deposit slips need Tesseract. Install
+[Homebrew](https://brew.sh) once, then:
+
+```bash
+brew install tesseract
+```
+
+Without it the app still runs — scanned files fall back to their filename amount and are flagged
+for review.
 
 ---
 
