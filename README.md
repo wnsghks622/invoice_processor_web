@@ -201,8 +201,10 @@ folder across before first launch.
 python -m unittest discover -s tests -t .
 ```
 
-26 tests covering amount parsing, duplicate detection, invoice merging, property matching, the
-bank-statement and rec-report parsers, and the subset-sum matcher. No database or network needed.
+57 tests covering amount parsing, duplicate detection, invoice merging, property matching, the
+bank-statement and rec-report parsers, the subset-sum matcher, the platform helpers (file-manager
+naming, the Bank Rec example path, Tesseract discovery), and the `.env` API-key writer. No
+database or network needed.
 
 ---
 
