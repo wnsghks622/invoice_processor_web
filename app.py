@@ -466,14 +466,15 @@ def fixer_assign(invoice_id):
 
 @app.route("/wizard")
 def wizard():
+    # The drop-path hint (#droppath) is rendered entirely client-side by updatePath() in
+    # wizard.html, which reacts to the month/property dropdowns and needs pathSep either way -
+    # so there's no separate server-rendered value to keep in sync with it.
     return render_template("wizard.html",
                            settings=state.load_settings(),
                            properties=state.per_property_pending(),
                            months=state.month_options(),
                            bank_rec_root=str(config.BANK_REC_ROOT),
-                           path_sep=os.sep,
-                           example_path=state.bank_rec_example_path(
-                               state.load_settings()["month"]))
+                           path_sep=os.sep)
 
 
 @app.route("/api/run/stage")

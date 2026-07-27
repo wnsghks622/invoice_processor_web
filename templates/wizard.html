@@ -29,8 +29,8 @@
     <div class="step-head"><span class="step-n">2</span> <strong>Drop bank documents</strong> (you do this in {{ file_manager }})
       <button class="btn" id="open-folder-btn" type="button" hidden>📁 Open this folder</button></div>
     <p class="muted">Put each property's bank statement, rec report, deposit slips (in a
-      <code>deposit slips\</code> subfolder) and financial reports into its folder under:</p>
-    <p><code id="droppath">{{ example_path }}</code></p>
+      <code>deposit slips</code> subfolder) and financial reports into its folder under:</p>
+    <p><code id="droppath"></code></p>
   </li>
   <li>
     <div class="step-head"><span class="step-n">3</span> <strong>Assemble</strong> one reconciliation PDF per property
@@ -98,8 +98,10 @@
   }
 
   function updatePath() {
-    const parts = [destRoot, `${monthSel.value} Bank Rec`];
-    if (propSel.value) parts.push(propSel.value);
+    // Show the per-property subfolder level even when "All properties" is selected, so the
+    // hint doesn't stop at the month folder - a literal '<property>' placeholder, same as
+    // the equivalent processor.py console message.
+    const parts = [destRoot, `${monthSel.value} Bank Rec`, propSel.value || '<property>'];
     dropPath.textContent = parts.join(pathSep) + pathSep;
   }
   monthSel.addEventListener('change', () => { updatePath(); loadReports(); });
