@@ -423,25 +423,46 @@ def month_options(n: int = 12) -> list[str]:
     return out
 
 
+def _strip_env_export_prefix(line: str) -> str:
+    """Strip a leading `export ` (python-dotenv accepts this form) from a .env line's
+    stripped form, so `export ANTHROPIC_API_KEY=...` is recognized the same as a plain
+    `ANTHROPIC_API_KEY=...` line instead of being missed by a naive `.startswith` scan."""
+    stripped = line.strip()
+    if stripped.startswith("export "):
+        stripped = stripped[len("export "):].lstrip()
+    return stripped
+
+
+def _is_api_key_line(line: str) -> bool:
+    """True if `line` assigns ANTHROPIC_API_KEY - with or without a leading `export`."""
+    return _strip_env_export_prefix(line).startswith("ANTHROPIC_API_KEY=")
+
+
+def _api_key_value_from_line(line: str) -> str:
+    """The value side of a line `_is_api_key_line` matched, with one layer of surrounding
+    single/double quotes stripped - the way python-dotenv loads it into os.environ. Without
+    this, a quoted file value (`ANTHROPIC_API_KEY="sk-..."`) would never compare equal to the
+    unquoted value python-dotenv actually puts in the environment."""
+    value = _strip_env_export_prefix(line).split("=", 1)[1].strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1]
+    return value
+
+
 def api_key_present() -> bool:
-    if config.ENV_FILE.exists():
-        try:
-            for line in config.ENV_FILE.read_text(encoding="utf-8").splitlines():
-                if line.strip().startswith("ANTHROPIC_API_KEY=") and line.split("=", 1)[1].strip():
-                    return True
-        except OSError:
-            pass
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    return bool(_api_key_in_env_file()) or bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
 
 
 def _api_key_in_env_file() -> str:
-    """The ANTHROPIC_API_KEY value currently stored in .env, or '' if absent/unreadable."""
+    """The ANTHROPIC_API_KEY value currently stored in .env, or '' if absent/unreadable.
+    Recognizes the same lines python-dotenv would: an optional leading `export`, and a value
+    optionally wrapped in matching single or double quotes."""
     if not config.ENV_FILE.exists():
         return ""
     try:
         for line in config.ENV_FILE.read_text(encoding="utf-8").splitlines():
-            if line.strip().startswith("ANTHROPIC_API_KEY="):
-                return line.split("=", 1)[1].strip()
+            if _is_api_key_line(line):
+                return _api_key_value_from_line(line)
     except OSError:
         pass
     return ""
@@ -484,7 +505,7 @@ def save_api_key(key: str) -> None:
         lines = path.read_text(encoding="utf-8").splitlines()
     out, replaced = [], False
     for line in lines:
-        if line.strip().startswith("ANTHROPIC_API_KEY="):
+        if _is_api_key_line(line):
             if not replaced:                       # collapse any duplicates to one line
                 out.append(f"ANTHROPIC_API_KEY={key}")
                 replaced = True
@@ -497,18 +518,22 @@ def save_api_key(key: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
     did_replace = False
     try:
-        tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
-        try:
-            os.chmod(tmp, 0o600)                   # no-op in practice on Windows
-        except OSError:
-            pass
+        # Create with owner-only permissions from the first byte, rather than writing the
+        # key with the process's default umask and locking it down afterwards - that would
+        # leave a window where the temp file holding the key is briefly group/world-readable
+        # on POSIX. A no-op in practice on Windows (the mode argument there only toggles the
+        # read-only attribute, and 0o600 keeps the owner-write bit set).
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("\n".join(out) + "\n")
         os.replace(tmp, path)
         did_replace = True
     finally:
         # A failure anywhere above (disk full, permission error, an antivirus lock on
         # Windows, ...) must not leave a credential-bearing .env.tmp sitting at the repo
-        # root: .gitignore only matches the exact name ".env", not ".env.*", so a leftover
-        # temp file is one broad `git add` away from landing in git history. Swallow any
+        # root: a leftover temp file holding a live credential is undesirable regardless of
+        # git (.gitignore covers .env.* too - this isn't about keeping it out of git history,
+        # it's about not leaving a stray copy of a live secret sitting on disk). Swallow any
         # cleanup failure so it can't mask the real exception already propagating.
         if not did_replace:
             try:

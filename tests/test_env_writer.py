@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Unit tests for the .env API-key writer. Uses a temp .env - never touches the real one."""
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -24,6 +25,7 @@ class SaveApiKey(unittest.TestCase):
 
     def tearDown(self):
         config.ENV_FILE = self._real_env_file
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_creates_env_file_when_absent(self):
         self.assertFalse(config.ENV_FILE.exists())
@@ -106,12 +108,33 @@ class SaveApiKey(unittest.TestCase):
         finally:
             os.environ.pop("ANTHROPIC_API_KEY", None)
 
+    def test_replaces_export_prefixed_key_without_duplicating(self):
+        # python-dotenv accepts a leading `export` (common when a .env is also `source`d as a
+        # shell script); the replace loop must recognize that line as the existing key rather
+        # than leaving it in place and appending a second, plain ANTHROPIC_API_KEY= line.
+        config.ENV_FILE.write_text(f"export ANTHROPIC_API_KEY={FAKE_KEY}\n", encoding="utf-8")
+        state.save_api_key(OTHER_KEY)
+        text = config.ENV_FILE.read_text(encoding="utf-8")
+        self.assertEqual(text.count("ANTHROPIC_API_KEY="), 1)
+        self.assertIn(OTHER_KEY, text)
+        self.assertNotIn(FAKE_KEY, text)
+
+    def test_replaces_quoted_key_without_duplicating(self):
+        # A value python-dotenv would unquote on load (e.g. hand-edited to add quotes) must
+        # still be recognized as the existing key line, not left behind as a stale duplicate.
+        config.ENV_FILE.write_text(f'ANTHROPIC_API_KEY="{FAKE_KEY}"\n', encoding="utf-8")
+        state.save_api_key(OTHER_KEY)
+        text = config.ENV_FILE.read_text(encoding="utf-8")
+        self.assertEqual(text.count("ANTHROPIC_API_KEY="), 1)
+        self.assertIn(OTHER_KEY, text)
+        self.assertNotIn(FAKE_KEY, text)
+
     def test_cleans_up_temp_file_when_replace_fails(self):
         # Simulates a failure between creating the temp file and the atomic swap (disk full,
         # permission error, an antivirus lock on Windows, ...). Without cleanup, a
-        # credential-bearing .env.tmp would be left sitting at the repo root - and
-        # .gitignore only matches the exact name ".env", not ".env.*", so that leftover is
-        # one broad `git add` away from landing in git history.
+        # credential-bearing .env.tmp would be left sitting at the repo root - undesirable
+        # regardless of git (.gitignore covers .env.* too; this is about not leaving a stray
+        # copy of a live secret on disk, not about keeping it out of git history).
         config.ENV_FILE.write_text(f"ANTHROPIC_API_KEY={FAKE_KEY}\n", encoding="utf-8")
         with mock.patch("os.replace", side_effect=OSError("simulated replace failure")):
             with self.assertRaises(OSError):
@@ -142,6 +165,7 @@ class ApiKeyFromEnvVar(unittest.TestCase):
         os.environ.pop("ANTHROPIC_API_KEY", None)
         if self._had is not None:
             os.environ["ANTHROPIC_API_KEY"] = self._had
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_false_when_environment_has_no_key(self):
         config.ENV_FILE.write_text(f"ANTHROPIC_API_KEY={FAKE_KEY}\n", encoding="utf-8")
@@ -153,6 +177,15 @@ class ApiKeyFromEnvVar(unittest.TestCase):
         os.environ["ANTHROPIC_API_KEY"] = FAKE_KEY
         self.assertFalse(state.api_key_from_env_var())
 
+    def test_false_when_file_value_is_quoted_and_env_mirrors_it(self):
+        # python-dotenv strips matching quotes when it loads .env into the process
+        # environment, so a quoted file value and its unquoted mirror in os.environ are the
+        # SAME key, not an override. A naive scan that kept the quotes would report the two
+        # as different and wrongly warn of a system-variable override.
+        config.ENV_FILE.write_text(f'ANTHROPIC_API_KEY="{FAKE_KEY}"\n', encoding="utf-8")
+        os.environ["ANTHROPIC_API_KEY"] = FAKE_KEY
+        self.assertFalse(state.api_key_from_env_var())
+
     def test_true_when_environment_supplies_a_different_key(self):
         config.ENV_FILE.write_text(f"ANTHROPIC_API_KEY={FAKE_KEY}\n", encoding="utf-8")
         os.environ["ANTHROPIC_API_KEY"] = OTHER_KEY
@@ -161,6 +194,36 @@ class ApiKeyFromEnvVar(unittest.TestCase):
     def test_true_when_env_has_a_key_and_no_file_exists(self):
         os.environ["ANTHROPIC_API_KEY"] = OTHER_KEY
         self.assertTrue(state.api_key_from_env_var())
+
+
+class ApiKeyInEnvFileParsing(unittest.TestCase):
+    """`_api_key_in_env_file` must parse the same lines python-dotenv does: an optional
+    leading `export`, and a value optionally wrapped in matching single or double quotes."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="ipw_envparse_"))
+        self._real_env_file = config.ENV_FILE
+        config.ENV_FILE = self.tmp / ".env"
+
+    def tearDown(self):
+        config.ENV_FILE = self._real_env_file
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_double_quoted_value_is_unquoted(self):
+        config.ENV_FILE.write_text(f'ANTHROPIC_API_KEY="{FAKE_KEY}"\n', encoding="utf-8")
+        self.assertEqual(state._api_key_in_env_file(), FAKE_KEY)
+
+    def test_single_quoted_value_is_unquoted(self):
+        config.ENV_FILE.write_text(f"ANTHROPIC_API_KEY='{FAKE_KEY}'\n", encoding="utf-8")
+        self.assertEqual(state._api_key_in_env_file(), FAKE_KEY)
+
+    def test_export_prefixed_line_is_recognized(self):
+        config.ENV_FILE.write_text(f"export ANTHROPIC_API_KEY={FAKE_KEY}\n", encoding="utf-8")
+        self.assertEqual(state._api_key_in_env_file(), FAKE_KEY)
+
+    def test_export_prefixed_and_quoted_together(self):
+        config.ENV_FILE.write_text(f'export ANTHROPIC_API_KEY="{FAKE_KEY}"\n', encoding="utf-8")
+        self.assertEqual(state._api_key_in_env_file(), FAKE_KEY)
 
 
 if __name__ == "__main__":
