@@ -1103,7 +1103,7 @@ def main():
         try:
             dest = move_to_processed(path, dest_folder, new_name)
             moved += 1
-            print(f"  Filed: {path.name}  ->  {dest_folder}\\{dest.name}")
+            print(f"  Filed: {path.name}  ->  {os.path.join(dest_folder, dest.name)}")
         except OSError as exc:
             print(f"  [!] Recorded '{path.name}' but couldn't move it ({exc}).")
             print(f"      Move it out of '{INPUT_FOLDER.name}' yourself to avoid a duplicate next run.")
