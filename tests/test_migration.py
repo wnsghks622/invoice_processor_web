@@ -75,6 +75,104 @@ class AddedColumnsRegistry(unittest.TestCase):
         self.assertIn("vendor_needs_review", db.INVOICE_COLUMNS)
 
 
+class VendorIdentityMigrationRegression(unittest.TestCase):
+    """Regression tests for the vendor identity schema migration.
+
+    Task 6 added vendor_id and vendor_needs_review to invoices, and canonical_name
+    and active to vendors. These tests verify the migration path and the self-healing
+    property that separating table DDL from index DDL restores.
+    """
+
+    def test_migration_of_old_invoices_table_without_vendor_columns(self):
+        """Regression: db.init() must not crash when vendor_id index references
+        a non-existent column in an existing table. This is the core bug that
+        motivated separating table DDL from index DDL."""
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+
+        # Create invoices table with the OLD schema (without vendor_id and vendor_needs_review)
+        old_invoices_schema = """
+        CREATE TABLE IF NOT EXISTS invoices (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            status           TEXT DEFAULT 'OK',
+            vendor_name      TEXT DEFAULT '',
+            invoice_number   TEXT DEFAULT '',
+            unit             TEXT DEFAULT '',
+            invoice_date     TEXT DEFAULT '',
+            invoice_date_iso TEXT DEFAULT '',
+            due_date         TEXT DEFAULT '',
+            amount           REAL,
+            amount_text      TEXT DEFAULT '',
+            description      TEXT DEFAULT '',
+            line_items       TEXT DEFAULT '',
+            property         TEXT DEFAULT '',
+            source_file      TEXT DEFAULT '',
+            date_processed   TEXT DEFAULT '',
+            entered_in_yardi INTEGER DEFAULT 0,
+            stored_file      TEXT DEFAULT '',
+            reconciled       TEXT DEFAULT '',
+            check_number     TEXT DEFAULT '',
+            carried_forward  TEXT DEFAULT '',
+            needs_review     INTEGER DEFAULT 0,
+            origin           TEXT DEFAULT 'processor'
+        )
+        """
+        conn.executescript(old_invoices_schema)
+
+        # Insert a row to simulate an existing database
+        conn.execute("INSERT INTO invoices (vendor_name) VALUES ('Test Vendor')")
+
+        # Now run the three-step init sequence that db.init() uses
+        conn.executescript(db._SCHEMA_TABLES)      # Tables: no-op since they exist
+        db._ensure_columns(conn)                    # Add missing columns
+        conn.executescript(db._SCHEMA_INDEXES)      # Indexes: now vendor_id column exists
+
+        # Verify the columns were added
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(invoices)")}
+        self.assertIn("vendor_id", cols)
+        self.assertIn("vendor_needs_review", cols)
+
+        # Verify the index was created
+        indices = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_invoices_vendor_id'"
+        )}
+        self.assertIn("idx_invoices_vendor_id", indices)
+
+        # Verify data was preserved
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM invoices").fetchone()[0], 1)
+
+        conn.close()
+
+    def test_self_healing_property_on_fresh_database(self):
+        """Regression: columns registered only in _ADDED_COLUMNS must still be
+        applied to fresh databases. This property is only preserved when tables are
+        created before _ensure_columns runs."""
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+
+        # Create a temporary fake column that is in _ADDED_COLUMNS but NOT in _SCHEMA
+        fake_spec = [
+            ("invoices", "fake_regression_test_column", "TEXT DEFAULT 'regression_test'"),
+        ]
+
+        # Run the three-step sequence with a fake column
+        conn.executescript(db._SCHEMA_TABLES)      # Tables are created empty
+        db._ensure_columns(conn, spec=fake_spec)    # Fake column added to existing table
+        conn.executescript(db._SCHEMA_INDEXES)      # Indexes created
+
+        # Verify the fake column was added to the existing table
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(invoices)")}
+        self.assertIn("fake_regression_test_column", cols)
+
+        # Verify the default value is set
+        row = conn.execute(
+            "INSERT INTO invoices (vendor_name) VALUES ('Test') RETURNING *"
+        ).fetchone()
+        self.assertEqual(row["fake_regression_test_column"], "regression_test")
+
+        conn.close()
+
+
 class InvoiceDateQueries(unittest.TestCase):
     """Behavioural tests for the date queries, against a real in-memory schema.
 

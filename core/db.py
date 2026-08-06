@@ -53,7 +53,7 @@ INVOICE_COLUMNS = [
     "origin",           # provenance: 'processor' | 'master' | 'tab:<name>' | 'manual'
 ]
 
-_SCHEMA = """
+_SCHEMA_TABLES = """
 CREATE TABLE IF NOT EXISTS properties (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     canonical_name TEXT NOT NULL UNIQUE,
@@ -94,11 +94,16 @@ CREATE TABLE IF NOT EXISTS invoices (
     needs_review        INTEGER DEFAULT 0,
     origin              TEXT DEFAULT 'processor'
 );
+"""
+
+_SCHEMA_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_invoices_property   ON invoices(property);
 CREATE INDEX IF NOT EXISTS idx_invoices_stored     ON invoices(stored_file);
 CREATE INDEX IF NOT EXISTS idx_invoices_reconciled ON invoices(reconciled);
 CREATE INDEX IF NOT EXISTS idx_invoices_vendor_id  ON invoices(vendor_id);
 """
+
+_SCHEMA = _SCHEMA_TABLES + _SCHEMA_INDEXES
 
 # Columns added after the original schema shipped. `_SCHEMA` uses CREATE TABLE IF NOT
 # EXISTS, which does nothing to a table that already exists - so every column added
@@ -159,10 +164,13 @@ def _conn_or(conn):
 
 
 def init() -> None:
-    """Create tables/indexes if absent, then add any columns introduced later. Idempotent."""
+    """Create tables, add any columns introduced after they shipped, then create
+    indexes. Indexes go last because one may reference a column that only exists
+    after the migration runs. Idempotent."""
     with _connect() as conn:
+        conn.executescript(_SCHEMA_TABLES)
         _ensure_columns(conn)
-        conn.executescript(_SCHEMA)
+        conn.executescript(_SCHEMA_INDEXES)
 
 
 def is_empty() -> bool:
@@ -276,10 +284,13 @@ def delete_vendor(vendor_id: int) -> None:
 def all_vendors() -> list[dict]:
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, short_name, aliases FROM vendors ORDER BY short_name COLLATE NOCASE"
+            "SELECT id, short_name, canonical_name, aliases, active FROM vendors "
+            "ORDER BY short_name COLLATE NOCASE"
         ).fetchall()
-    return [{"id": r["id"], "short_name": r["short_name"], "aliases": r["aliases"] or ""}
-            for r in rows]
+    return [{"id": r["id"], "short_name": r["short_name"],
+             "canonical_name": r["canonical_name"] or "",
+             "aliases": r["aliases"] or "",
+             "active": r["active"]} for r in rows]
 
 
 def load_vendor_map(path=None) -> list:
