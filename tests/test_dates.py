@@ -67,3 +67,40 @@ class ToIso(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+from core import processor as ip
+
+
+class RecordCarriesIsoDate(unittest.TestCase):
+    """The processor's record builder must emit invoice_date_iso alongside invoice_date,
+    so no row can ever be inserted with one set and the other missing."""
+
+    def _record(self, invoice_date):
+        data = {
+            "vendor_name":   "Athens Services",
+            "invoice_number": "A1",
+            "invoice_date":  invoice_date,
+            "total_amount":  "100.00",
+            "property":      "Kenmore Plaza",
+        }
+        return ip.build_invoice_record(
+            data, source_file="x.pdf", status="OK",
+            date_processed="06/03/2026", stored_file="Athens_06_2026.pdf",
+        )
+
+    def test_parseable_date_produces_iso(self):
+        self.assertEqual(self._record("06/01/2026")["invoice_date_iso"], "2026-06-01")
+
+    def test_previously_failing_shapes_now_produce_iso(self):
+        self.assertEqual(self._record("13-Jul-26")["invoice_date_iso"], "2026-07-13")
+        self.assertEqual(self._record("06262026")["invoice_date_iso"], "2026-06-26")
+
+    def test_unparseable_date_produces_empty_iso_not_a_missing_key(self):
+        rec = self._record("garbage")
+        self.assertIn("invoice_date_iso", rec)
+        self.assertEqual(rec["invoice_date_iso"], "")
+
+    def test_raw_invoice_date_is_preserved_verbatim(self):
+        # The raw string is provenance and must survive untouched next to the parsed form.
+        self.assertEqual(self._record("13-Jul-26")["invoice_date"], "13-Jul-26")

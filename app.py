@@ -330,6 +330,11 @@ def edit_invoice(invoice_id):
         "vendor_name", "invoice_number", "unit", "invoice_date", "amount_text",
         "property", "check_number") if k in request.form}
 
+    # invoice_date_iso must never disagree with invoice_date - recompute it on every edit.
+    if "invoice_date" in fields:
+        from core import dates
+        fields["invoice_date_iso"] = dates.to_iso(fields["invoice_date"])
+
     # A property change is a reassignment, same as the fixer: move the filed PDF into the new
     # property's folder (out of Needs Review / the old folder) and keep the review flag in
     # step - otherwise the record points at a folder the file isn't in.

@@ -42,6 +42,7 @@ except ImportError:
 # original CSV/xlsx-based processor is kept, untouched, in the sibling invoice_processor/ folder.
 import config                       # web app paths (data/ dir, DB path)
 from . import db                    # SQLite data layer (cycle-safe: only used at call time)
+from core import dates
 
 BASE_DIR = config.HERE
 
@@ -567,6 +568,46 @@ def _summarize_line_items(items) -> str:
     return note if len(note) <= 500 else note[:497] + "..."
 
 
+def build_invoice_record(data: Dict, source_file: str, status: str, date_processed: str,
+                         needs_review: bool = False, stored_file: str = "") -> Dict:
+    """Assemble the invoice row that db.insert_invoice consumes.
+
+    Pure - no database, no filesystem - so the write path can be unit-tested. write_invoice
+    owns the duplicate bookkeeping and calls this for the row itself.
+    """
+    vendor        = (data.get("vendor_name") or "").strip() or "Unknown Vendor"
+    invoice_no    = resolve_invoice_number(data)
+    unit          = (data.get("unit") or "").strip()
+    parsed_amount = _parse_amount(data.get("total_amount"))
+    amount_text   = "" if parsed_amount is not None else (
+        str(data.get("total_amount")).strip() if data.get("total_amount") else "")
+    items_note    = _summarize_line_items(data.get("line_items"))
+    invoice_date  = data.get("invoice_date") or ""
+
+    return {
+        "status":         status,
+        "vendor_name":    vendor,
+        "invoice_number": invoice_no,
+        "unit":           unit,
+        "invoice_date":     invoice_date,
+        # Parsed form. Every timing decision in the app reads this, never the raw text.
+        # Empty string when unparseable, which routes the row to the date review queue.
+        "invoice_date_iso": dates.to_iso(invoice_date),
+        "due_date":       data.get("due_date") or "",
+        "amount":         parsed_amount,
+        "amount_text":    amount_text,
+        "description":    data.get("description") or "",
+        "line_items":     items_note,
+        "property":       data.get("property") or "",
+        "source_file":    source_file,
+        "date_processed": date_processed,
+        "entered_in_yardi": 0,
+        "stored_file":    stored_file,
+        "needs_review":   1 if needs_review else 0,
+        "origin":         "processor",
+    }
+
+
 def write_invoice(data: Dict, source_file: str, seen: set, date_processed: str = None,
                   needs_review: bool = False, stored_file: str = ""):
     """
@@ -597,25 +638,10 @@ def write_invoice(data: Dict, source_file: str, seen: set, date_processed: str =
     if key:
         seen.add(key)
 
-    db.insert_invoice({
-        "status":         status,
-        "vendor_name":    vendor,
-        "invoice_number": invoice_no,
-        "unit":           unit,
-        "invoice_date":   data.get("invoice_date") or "",
-        "due_date":       data.get("due_date") or "",
-        "amount":         parsed_amount,
-        "amount_text":    amount_text,
-        "description":    data.get("description") or "",
-        "line_items":     items_note,
-        "property":       data.get("property") or "",
-        "source_file":    source_file,
-        "date_processed": when,
-        "entered_in_yardi": 0,
-        "stored_file":    stored_file,
-        "needs_review":   1 if needs_review else 0,
-        "origin":         "processor",
-    })
+    db.insert_invoice(build_invoice_record(
+        data, source_file=source_file, status=status, date_processed=when,
+        needs_review=needs_review, stored_file=stored_file,
+    ))
     return status, vendor, invoice_no
 
 
