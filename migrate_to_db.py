@@ -24,6 +24,7 @@ import sys
 import openpyxl
 
 import config
+from core import dates
 from core import db
 from core import processor as ip
 
@@ -120,7 +121,10 @@ def import_invoices(canonical_names: set):
             "status": status, "vendor_name": str(vendor or "").strip(),
             "invoice_number": str(d.get("Invoice #") or "").strip(),
             "unit": str(d.get("Unit") or "").strip(),
+            # invoice_date and invoice_date_iso are written together here so the two can
+            # never disagree (same reasoning as core/db.py's set_invoice_date).
             "invoice_date": str(d.get("Invoice Date") or "").strip(),
+            "invoice_date_iso": dates.to_iso(d.get("Invoice Date")),
             "due_date": str(d.get("Due Date") or "").strip(),
             "amount": amt, "amount_text": amt_text,
             "description": str(d.get("Description") or "").strip(),
@@ -167,6 +171,7 @@ def import_invoices(canonical_names: set):
                 "invoice_number": str(d.get("Invoice #") or "").strip(),
                 "unit": str(d.get("Unit") or "").strip(),
                 "invoice_date": str(d.get("Invoice Date") or "").strip(),
+                "invoice_date_iso": dates.to_iso(d.get("Invoice Date")),
                 "due_date": str(d.get("Due Date") or "").strip(),
                 "amount": amt, "amount_text": amt_text,
                 "description": str(d.get("Description") or "").strip(),
