@@ -478,6 +478,9 @@ def set_invoice_date(invoice_id: int, raw: str, iso: str) -> None:
 Run: `python -m unittest discover -s tests -t .`
 Expected: PASS, 37 tests
 
+(As built, this task ended at **42** after a fix round added `db._conn_or` and
+behavioural tests for the two query functions. Later counts below reflect that.)
+
 - [ ] **Step 5: Write the backfill script**
 
 Create `scripts/backfill_dates.py`:
@@ -702,7 +705,7 @@ Run: `python -m unittest tests.test_dates -v`
 Expected: PASS, 10 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 41 tests
+Expected: PASS, 46 tests
 
 - [ ] **Step 5: Keep the edit form in step**
 
@@ -956,7 +959,7 @@ CREATE INDEX IF NOT EXISTS idx_invoices_vendor_id ON invoices(vendor_id);
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 43 tests
+Expected: PASS, 48 tests
 
 - [ ] **Step 5: Verify the migration ran against the live database**
 
@@ -1246,7 +1249,7 @@ Run: `python -m unittest tests.test_vendor_match -v`
 Expected: PASS, 18 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 61 tests
+Expected: PASS, 66 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1348,7 +1351,7 @@ def cluster(names: list[str], threshold: float = 0.86) -> list[list[str]]:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_vendor_match -v`
-Expected: PASS, 22 tests (and 65 overall)
+Expected: PASS, 22 tests (and 70 overall)
 
 - [ ] **Step 5: Write the bootstrap script**
 
@@ -1705,7 +1708,7 @@ otherwise only checks by counting rows by hand.
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 71 tests (28 in test_vendor_match.py)
+Expected: PASS, 80 tests (28 in test_vendor_match.py, plus 4 new VendorQueries cases in test_migration.py)
 
 - [ ] **Step 5: Backfill vendor_id over existing invoices**
 
@@ -1898,7 +1901,7 @@ reverted.
 - [ ] **Step 6: Run the full suite and commit**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 71 tests
+Expected: PASS, 80 tests
 
 ```bash
 git add app.py templates/fixer.html
@@ -1978,7 +1981,7 @@ git commit -m "docs: record post-merge pair statistics and date/vendor review gu
 
 ## Done criteria
 
-- `python -m unittest discover -s tests -t .` passes, 71 tests (26 pre-existing + 45 new).
+- `python -m unittest discover -s tests -t .` passes, 80 tests (26 pre-existing + 54 new).
 - `data/invoices.db` has `invoice_date_iso`, `vendor_id`, `vendor_needs_review` on
   `invoices`, and `canonical_name`, `active` on `vendors`.
 - Every invoice with a readable date has `invoice_date_iso` populated; the rest appear in
