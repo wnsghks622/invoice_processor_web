@@ -48,5 +48,18 @@ class EnsureColumns(unittest.TestCase):
         })
 
 
+class AddedColumnsRegistry(unittest.TestCase):
+    def test_invoice_date_iso_is_registered(self):
+        self.assertIn(
+            ("invoices", "invoice_date_iso", "TEXT DEFAULT ''"),
+            db._ADDED_COLUMNS,
+        )
+
+    def test_invoice_date_iso_is_in_the_column_list(self):
+        # INVOICE_COLUMNS filters both insert_invoice and update_invoice; a column
+        # missing from it is silently never written.
+        self.assertIn("invoice_date_iso", db.INVOICE_COLUMNS)
+
+
 if __name__ == "__main__":
     unittest.main()

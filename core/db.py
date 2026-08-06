@@ -33,6 +33,7 @@ INVOICE_COLUMNS = [
     "invoice_number",
     "unit",
     "invoice_date",
+    "invoice_date_iso",  # 'YYYY-MM-DD' parsed from invoice_date; '' when unparseable
     "due_date",
     "amount",           # REAL, parsed; NULL when unparseable (then amount_text holds raw)
     "amount_text",      # original text when amount couldn't be parsed to a number
@@ -70,6 +71,7 @@ CREATE TABLE IF NOT EXISTS invoices (
     invoice_number   TEXT DEFAULT '',
     unit             TEXT DEFAULT '',
     invoice_date     TEXT DEFAULT '',
+    invoice_date_iso TEXT DEFAULT '',
     due_date         TEXT DEFAULT '',
     amount           REAL,
     amount_text      TEXT DEFAULT '',
@@ -96,7 +98,7 @@ CREATE INDEX IF NOT EXISTS idx_invoices_reconciled ON invoices(reconciled);
 # later must go through _ensure_columns() instead. Append here; never edit _SCHEMA
 # alone for a column that existing databases won't have.
 _ADDED_COLUMNS = [
-    # (table, column, column DDL)
+    ("invoices", "invoice_date_iso", "TEXT DEFAULT ''"),
 ]
 
 
@@ -405,6 +407,26 @@ def reassign_property(invoice_id: int, new_property: str, new_stored_file: str =
 def review_invoices() -> list[dict]:
     """All invoices still on Needs Review (for reassign_review)."""
     return list_invoices(needs_review=True)
+
+
+def unresolved_date_invoices() -> list[dict]:
+    """Invoices whose date could not be parsed. These are the date review queue - they
+    are NOT dropped, because a dropped row is indistinguishable from a skipped month."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM invoices WHERE COALESCE(invoice_date_iso,'') = '' "
+            "ORDER BY id DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_invoice_date(invoice_id: int, raw: str, iso: str) -> None:
+    """Write the raw date and its parsed form together, so the two can never disagree."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE invoices SET invoice_date = ?, invoice_date_iso = ? WHERE id = ?",
+            (raw, iso, invoice_id),
+        )
 
 
 def file_status() -> tuple[set, set]:
