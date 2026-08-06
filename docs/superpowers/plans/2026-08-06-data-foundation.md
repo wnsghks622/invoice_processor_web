@@ -1750,7 +1750,22 @@ git commit -m "feat: bind vendor_id on the processor write path"
 **Files:**
 - Modify: `app.py` (`fixer` route; add `fixer_set_vendor` handler)
 - Modify: `templates/fixer.html`
-- Test: manual — route and template change.
+- Test: `tests/test_app.py` (extend — the route-test file established during Task 5's fix
+  round, using the in-memory `_connect` patch documented there)
+
+**Route coverage is required, not manual.** Task 5 originally specified manual verification
+for its handler and the review found that untenable: no Flask route in this codebase had
+automated coverage, so the validate-before-write ordering could regress silently. The human
+partner ruled that route tests be committed. `fixer_set_vendor` has strictly more logic than
+`fixer_set_date` — it also mutates a vendor's alias list, which is the mechanism that stops
+the queue re-asking about the same spelling forever — so the same standard applies here.
+
+Cover at least: a non-numeric or missing `vendor_id` is rejected without a write; a
+`vendor_id` that does not exist is rejected without a write; a valid confirmation binds
+`vendor_id`, clears `vendor_needs_review`, and appends the raw spelling to that vendor's
+aliases; confirming a second invoice with a spelling already in the list does not duplicate
+it; and — the constraint worth pinning here — the invoice's `stored_file` is unchanged
+afterwards.
 
 **Interfaces:**
 - Consumes: `db.vendor_review_invoices()`, `db.set_invoice_vendor()` (Task 9),
