@@ -8,6 +8,40 @@
 its PDF and see where the work was done, then pick the right property — the invoice moves into
 that property's pending pool (and the filed PDF moves too).</p>
 
+{% if undated %}
+<section class="panel">
+  <div class="panel-head">
+    <div class="panel-title">Dates that could not be read</div>
+    <div class="panel-note">{{ undated|length }} invoice{{ '' if undated|length == 1 else 's' }}</div>
+  </div>
+  <p class="muted">
+    These invoices have a date the app could not parse. They are not counted in any
+    monthly total until resolved &mdash; an unreadable date looks the same as a vendor
+    who skipped a month.
+  </p>
+  <table class="props">
+    <thead>
+      <tr><th>Vendor</th><th>Property</th><th>As printed</th><th>Correct date</th></tr>
+    </thead>
+    <tbody>
+    {% for inv in undated %}
+      <tr>
+        <td>{{ inv.vendor_name or '(no vendor)' }}</td>
+        <td>{{ inv.property or '(none)' }}</td>
+        <td><code>{{ inv.invoice_date or '(blank)' }}</code></td>
+        <td>
+          <form method="post" action="{{ url_for('fixer_set_date', invoice_id=inv.id) }}">
+            <input type="date" name="invoice_date" required>
+            <button class="btn" type="submit">Save</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
 {% if reviews %}
 <div class="table-card">
 <table class="invoices">

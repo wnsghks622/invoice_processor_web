@@ -439,7 +439,11 @@ def fixer():
     reviews = db.review_invoices()
     for r in reviews:                    # let each row link to its PDF (lives in Needs Review/)
         r["has_file"] = state.resolve_invoice_file(r) is not None
-    return render_template("fixer.html", reviews=reviews, properties=db.all_properties())
+    undated = db.unresolved_date_invoices()
+    return render_template("fixer.html",
+                           reviews=reviews,
+                           undated=undated,
+                           properties=db.all_properties())
 
 
 @app.route("/fixer/<int:invoice_id>/assign", methods=["POST"])
@@ -461,6 +465,27 @@ def fixer_assign(invoice_id):
     db.reassign_property(invoice_id, chosen, new_stored)
     db.export_amount_sidecars(config.PROCESSED)
     flash(f"Assigned to {chosen}.")
+    return redirect(url_for("fixer"))
+
+
+@app.route("/fixer/<int:invoice_id>/date", methods=["POST"])
+def fixer_set_date(invoice_id):
+    """Resolve an invoice whose date could not be parsed. The user supplies the date from
+    a picker, so we store an already-valid ISO string and echo it into the raw column."""
+    from core import dates
+    chosen = request.form.get("invoice_date", "").strip()
+    if not chosen:
+        flash("Pick a date.")
+        return redirect(url_for("fixer"))
+    iso = dates.to_iso(chosen)
+    if not iso:
+        flash(f"Could not read '{chosen}' as a date.")
+        return redirect(url_for("fixer"))
+    if not db.get_invoice(invoice_id):
+        flash("That invoice no longer exists.")
+        return redirect(url_for("fixer"))
+    db.set_invoice_date(invoice_id, iso, iso)
+    flash(f"Date set to {iso}.")
     return redirect(url_for("fixer"))
 
 
