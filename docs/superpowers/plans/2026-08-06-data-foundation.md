@@ -389,7 +389,7 @@ git commit -m "feat: add invoice date normalization with explicit parse failures
 ## Task 3: `invoice_date_iso` column and backfill
 
 **Files:**
-- Modify: `core/db.py` (`_ADDED_COLUMNS`; add `invoice_date_iso` to `_COLUMNS` at line ~44; add `unresolved_date_invoices()` and `set_invoice_date()`)
+- Modify: `core/db.py` (`_ADDED_COLUMNS`; add `invoice_date_iso` to `INVOICE_COLUMNS` at line ~44; add `unresolved_date_invoices()` and `set_invoice_date()`)
 - Create: `scripts/backfill_dates.py`
 - Test: `tests/test_migration.py` (extend)
 
@@ -414,9 +414,9 @@ class AddedColumnsRegistry(unittest.TestCase):
         )
 
     def test_invoice_date_iso_is_in_the_column_list(self):
-        # _COLUMNS drives insert/update field ordering; a column missing from it is
-        # silently never written.
-        self.assertIn("invoice_date_iso", db._COLUMNS)
+        # INVOICE_COLUMNS filters both insert_invoice and update_invoice; a column
+        # missing from it is silently never written.
+        self.assertIn("invoice_date_iso", db.INVOICE_COLUMNS)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -434,7 +434,7 @@ _ADDED_COLUMNS = [
 ]
 ```
 
-Add `"invoice_date_iso"` to the `_COLUMNS` list (the list beginning around line 30 that ends
+Add `"invoice_date_iso"` to the `INVOICE_COLUMNS` list (the list beginning around line 30 that ends
 with `"origin"`), immediately after `"invoice_date"`:
 
 ```python
@@ -867,7 +867,7 @@ git commit -m "feat: add date review queue to the Fixer page"
 ## Task 6: Vendor identity schema
 
 **Files:**
-- Modify: `core/db.py` (`_ADDED_COLUMNS`, `_SCHEMA` vendors table, `_COLUMNS`)
+- Modify: `core/db.py` (`_ADDED_COLUMNS`, `_SCHEMA` vendors table, `INVOICE_COLUMNS`)
 - Test: `tests/test_migration.py` (extend)
 
 **Interfaces:**
@@ -895,8 +895,8 @@ Append to the `AddedColumnsRegistry` class in `tests/test_migration.py`:
                 self.assertIn(entry, db._ADDED_COLUMNS)
 
     def test_vendor_columns_are_in_the_invoice_column_list(self):
-        self.assertIn("vendor_id", db._COLUMNS)
-        self.assertIn("vendor_needs_review", db._COLUMNS)
+        self.assertIn("vendor_id", db.INVOICE_COLUMNS)
+        self.assertIn("vendor_needs_review", db.INVOICE_COLUMNS)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -918,7 +918,7 @@ _ADDED_COLUMNS = [
 ]
 ```
 
-Add both invoice columns to `_COLUMNS`, after `"vendor_name"`:
+Add both invoice columns to `INVOICE_COLUMNS`, after `"vendor_name"`:
 
 ```python
     "vendor_name",
@@ -997,6 +997,8 @@ git commit -m "feat: add vendor identity columns to vendors and invoices"
   - `vendor_match.match(raw: str, vendors: list[dict]) -> MatchResult`, where `MatchResult` is a
     `NamedTuple` with fields `outcome: str` (`"bind"` | `"suggest"` | `"new"`),
     `vendor_id: int | None`, `score: float`, `reason: str`.
+  - `vendor_match.append_alias(existing: str | None, raw: str | None) -> str` — adds a raw
+    spelling to a semicolon-separated alias list, case-insensitive dedup. Task 10 calls it.
   - Each `vendors` entry is a dict with at least `id`, `canonical_name`, `short_name`, `aliases`.
 
 - [ ] **Step 1: Write the failing test**
@@ -1093,6 +1095,30 @@ class MatchThresholds(unittest.TestCase):
     def test_score_below_suggest_is_new(self):
         r = vm._classify(0.79, vendor_id=7, reason="close-spelling")
         self.assertEqual((r.outcome, r.vendor_id), ("new", None))
+
+
+class AppendAlias(unittest.TestCase):
+    """Confirming a vendor on the review screen writes that raw spelling into its alias
+    list. This is the mechanism that makes the queue shrink toward zero instead of asking
+    the same question every month, so it is tested rather than left in a route handler."""
+
+    def test_new_spelling_is_appended(self):
+        self.assertEqual(vm.append_alias("Athens Svcs", "ATHENS SERVICES"),
+                         "Athens Svcs; ATHENS SERVICES")
+
+    def test_existing_spelling_is_not_duplicated_case_insensitively(self):
+        self.assertEqual(vm.append_alias("Athens Svcs; ATHENS SERVICES", "athens services"),
+                         "Athens Svcs; ATHENS SERVICES")
+
+    def test_empty_existing_list_yields_just_the_new_alias(self):
+        self.assertEqual(vm.append_alias("", "Athens Services"), "Athens Services")
+
+    def test_blank_raw_is_a_no_op(self):
+        self.assertEqual(vm.append_alias("Athens Svcs", "   "), "Athens Svcs")
+        self.assertEqual(vm.append_alias("Athens Svcs", None), "Athens Svcs")
+
+    def test_whitespace_and_empty_segments_are_cleaned(self):
+        self.assertEqual(vm.append_alias(" A ;; B ", "C"), "A; B; C")
 
 
 if __name__ == "__main__":
@@ -1199,15 +1225,28 @@ def match(raw: Optional[str], vendors: list[dict]) -> MatchResult:
             if score > best_score:
                 best_id, best_score = v["id"], score
     return _classify(best_score, best_id, "close-spelling")
+
+
+def append_alias(existing: Optional[str], raw: Optional[str]) -> str:
+    """Add a raw spelling to a vendor's semicolon-separated alias list.
+
+    Case-insensitive dedup, blank segments dropped. The review screen calls this when a
+    vendor is confirmed - it is what stops the same spelling being asked about twice.
+    """
+    aliases = [a.strip() for a in (existing or "").split(";") if a.strip()]
+    candidate = (raw or "").strip()
+    if candidate and candidate.lower() not in {a.lower() for a in aliases}:
+        aliases.append(candidate)
+    return "; ".join(aliases)
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_vendor_match -v`
-Expected: PASS, 13 tests
+Expected: PASS, 18 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 56 tests
+Expected: PASS, 61 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1309,7 +1348,7 @@ def cluster(names: list[str], threshold: float = 0.86) -> list[list[str]]:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_vendor_match -v`
-Expected: PASS, 17 tests (and 60 overall)
+Expected: PASS, 22 tests (and 65 overall)
 
 - [ ] **Step 5: Write the bootstrap script**
 
@@ -1601,7 +1640,7 @@ def set_invoice_vendor(invoice_id: int, vendor_id: int) -> None:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 66 tests (23 in test_vendor_match.py)
+Expected: PASS, 71 tests (28 in test_vendor_match.py)
 
 - [ ] **Step 5: Backfill vendor_id over existing invoices**
 
@@ -1647,7 +1686,8 @@ git commit -m "feat: bind vendor_id on the processor write path"
 
 **Interfaces:**
 - Consumes: `db.vendor_review_invoices()`, `db.set_invoice_vendor()` (Task 9),
-  `db.all_vendors()`, `db.update_vendor()`, `vendor_match.match` (Task 7).
+  `db.all_vendors()`, `db.update_vendor()`, `vendor_match.match` and
+  `vendor_match.append_alias` (Task 7).
 - Produces: route `POST /fixer/<int:invoice_id>/vendor`.
 
 - [ ] **Step 1: Extend the Fixer route**
@@ -1699,10 +1739,10 @@ def fixer_set_vendor(invoice_id):
         flash("That vendor no longer exists.")
         return redirect(url_for("fixer"))
 
-    raw = (inv.get("vendor_name") or "").strip()
-    aliases = [a.strip() for a in (vendor.get("aliases") or "").split(";") if a.strip()]
-    if raw and raw.lower() not in {a.lower() for a in aliases}:
-        db.update_vendor(vendor_id, vendor["short_name"], "; ".join(aliases + [raw]))
+    from core import vendor_match
+    updated = vendor_match.append_alias(vendor.get("aliases"), inv.get("vendor_name"))
+    if updated != (vendor.get("aliases") or ""):
+        db.update_vendor(vendor_id, vendor["short_name"], updated)
 
     db.set_invoice_vendor(invoice_id, vendor_id)
     flash(f"Matched to {vendor.get('canonical_name') or vendor['short_name']}.")
@@ -1793,7 +1833,7 @@ reverted.
 - [ ] **Step 6: Run the full suite and commit**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 66 tests
+Expected: PASS, 71 tests
 
 ```bash
 git add app.py templates/fixer.html
@@ -1873,7 +1913,7 @@ git commit -m "docs: record post-merge pair statistics and date/vendor review gu
 
 ## Done criteria
 
-- `python -m unittest discover -s tests -t .` passes, 66 tests (26 pre-existing + 40 new).
+- `python -m unittest discover -s tests -t .` passes, 71 tests (26 pre-existing + 45 new).
 - `data/invoices.db` has `invoice_date_iso`, `vendor_id`, `vendor_needs_review` on
   `invoices`, and `canonical_name`, `active` on `vendors`.
 - Every invoice with a readable date has `invoice_date_iso` populated; the rest appear in
