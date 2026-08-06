@@ -30,6 +30,8 @@ DB_PATH = config.DB_PATH
 INVOICE_COLUMNS = [
     "status",           # 'OK' | 'DUPLICATE'
     "vendor_name",
+    "vendor_id",             # FK to vendors.id; NULL until matched
+    "vendor_needs_review",   # 0 | 1 - queued on the Fixer page's vendor tab
     "invoice_number",
     "unit",
     "invoice_date",
@@ -60,37 +62,42 @@ CREATE TABLE IF NOT EXISTS properties (
     sort_order     INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS vendors (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    short_name TEXT NOT NULL UNIQUE,
-    aliases    TEXT DEFAULT ''
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    short_name     TEXT NOT NULL UNIQUE,
+    canonical_name TEXT DEFAULT '',
+    aliases        TEXT DEFAULT '',
+    active         INTEGER DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS invoices (
-    id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    status           TEXT DEFAULT 'OK',
-    vendor_name      TEXT DEFAULT '',
-    invoice_number   TEXT DEFAULT '',
-    unit             TEXT DEFAULT '',
-    invoice_date     TEXT DEFAULT '',
-    invoice_date_iso TEXT DEFAULT '',
-    due_date         TEXT DEFAULT '',
-    amount           REAL,
-    amount_text      TEXT DEFAULT '',
-    description      TEXT DEFAULT '',
-    line_items       TEXT DEFAULT '',
-    property         TEXT DEFAULT '',
-    source_file      TEXT DEFAULT '',
-    date_processed   TEXT DEFAULT '',
-    entered_in_yardi INTEGER DEFAULT 0,
-    stored_file      TEXT DEFAULT '',
-    reconciled       TEXT DEFAULT '',
-    check_number     TEXT DEFAULT '',
-    carried_forward  TEXT DEFAULT '',
-    needs_review     INTEGER DEFAULT 0,
-    origin           TEXT DEFAULT 'processor'
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    status              TEXT DEFAULT 'OK',
+    vendor_name         TEXT DEFAULT '',
+    vendor_id           INTEGER,
+    vendor_needs_review INTEGER DEFAULT 0,
+    invoice_number      TEXT DEFAULT '',
+    unit                TEXT DEFAULT '',
+    invoice_date        TEXT DEFAULT '',
+    invoice_date_iso    TEXT DEFAULT '',
+    due_date            TEXT DEFAULT '',
+    amount              REAL,
+    amount_text         TEXT DEFAULT '',
+    description         TEXT DEFAULT '',
+    line_items          TEXT DEFAULT '',
+    property            TEXT DEFAULT '',
+    source_file         TEXT DEFAULT '',
+    date_processed      TEXT DEFAULT '',
+    entered_in_yardi    INTEGER DEFAULT 0,
+    stored_file         TEXT DEFAULT '',
+    reconciled          TEXT DEFAULT '',
+    check_number        TEXT DEFAULT '',
+    carried_forward     TEXT DEFAULT '',
+    needs_review        INTEGER DEFAULT 0,
+    origin              TEXT DEFAULT 'processor'
 );
 CREATE INDEX IF NOT EXISTS idx_invoices_property   ON invoices(property);
 CREATE INDEX IF NOT EXISTS idx_invoices_stored     ON invoices(stored_file);
 CREATE INDEX IF NOT EXISTS idx_invoices_reconciled ON invoices(reconciled);
+CREATE INDEX IF NOT EXISTS idx_invoices_vendor_id  ON invoices(vendor_id);
 """
 
 # Columns added after the original schema shipped. `_SCHEMA` uses CREATE TABLE IF NOT
@@ -98,7 +105,11 @@ CREATE INDEX IF NOT EXISTS idx_invoices_reconciled ON invoices(reconciled);
 # later must go through _ensure_columns() instead. Append here; never edit _SCHEMA
 # alone for a column that existing databases won't have.
 _ADDED_COLUMNS = [
-    ("invoices", "invoice_date_iso", "TEXT DEFAULT ''"),
+    ("invoices", "invoice_date_iso",     "TEXT DEFAULT ''"),
+    ("vendors",  "canonical_name",       "TEXT DEFAULT ''"),
+    ("vendors",  "active",               "INTEGER DEFAULT 1"),
+    ("invoices", "vendor_id",            "INTEGER"),
+    ("invoices", "vendor_needs_review",  "INTEGER DEFAULT 0"),
 ]
 
 
@@ -150,8 +161,8 @@ def _conn_or(conn):
 def init() -> None:
     """Create tables/indexes if absent, then add any columns introduced later. Idempotent."""
     with _connect() as conn:
-        conn.executescript(_SCHEMA)
         _ensure_columns(conn)
+        conn.executescript(_SCHEMA)
 
 
 def is_empty() -> bool:

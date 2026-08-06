@@ -60,6 +60,20 @@ class AddedColumnsRegistry(unittest.TestCase):
         # missing from it is silently never written.
         self.assertIn("invoice_date_iso", db.INVOICE_COLUMNS)
 
+    def test_vendor_identity_columns_are_registered(self):
+        for entry in (
+            ("vendors",  "canonical_name",      "TEXT DEFAULT ''"),
+            ("vendors",  "active",              "INTEGER DEFAULT 1"),
+            ("invoices", "vendor_id",           "INTEGER"),
+            ("invoices", "vendor_needs_review", "INTEGER DEFAULT 0"),
+        ):
+            with self.subTest(entry=entry):
+                self.assertIn(entry, db._ADDED_COLUMNS)
+
+    def test_vendor_columns_are_in_the_invoice_column_list(self):
+        self.assertIn("vendor_id", db.INVOICE_COLUMNS)
+        self.assertIn("vendor_needs_review", db.INVOICE_COLUMNS)
+
 
 class InvoiceDateQueries(unittest.TestCase):
     """Behavioural tests for the date queries, against a real in-memory schema.
