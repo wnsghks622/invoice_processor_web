@@ -1485,15 +1485,18 @@ git commit -m "feat: add vendor clustering bootstrap from existing invoice histo
 **Files:**
 - Modify: `core/processor.py` (record builder, same function edited in Task 4)
 - Modify: `core/db.py` (add `vendor_review_invoices()`, `set_invoice_vendor()`)
-- Test: `tests/test_vendor_match.py` (extend)
+- Test: `tests/test_vendor_match.py` (extend), `tests/test_migration.py` (extend)
 
 **Interfaces:**
-- Consumes: `vendor_match.match` (Task 7), the columns from Task 6.
+- Consumes: `vendor_match.match` (Task 7), the columns from Task 6, and `db._conn_or(conn)`
+  — the injectable-connection context manager added during Task 3's fix round, which is
+  what lets db query functions be tested against an in-memory database.
 - Produces:
   - Records emitted by the processor carry `vendor_id` and `vendor_needs_review`.
-  - `db.vendor_review_invoices() -> list[dict]` — rows where `vendor_needs_review = 1`.
-  - `db.set_invoice_vendor(invoice_id: int, vendor_id: int) -> None` — binds the vendor and
-    clears the review flag. Never touches `vendor_name` or `stored_file`.
+  - `db.vendor_review_invoices(conn=None) -> list[dict]` — rows where
+    `COALESCE(vendor_needs_review,0) = 1`, newest first.
+  - `db.set_invoice_vendor(invoice_id: int, vendor_id: int, conn=None) -> None` — binds the
+    vendor and clears the review flag. Never touches `vendor_name` or `stored_file`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1608,34 +1611,96 @@ With `vendors=None` (the default, used by the Task 4 tests) `match` returns `"ne
 record gets `vendor_id=None, vendor_needs_review=1` — the correct outcome for an unknown
 vendor, and no database is touched.
 
-In `core/db.py`, add the two query functions beside `review_invoices()`:
+In `core/db.py`, add the two query functions beside `review_invoices()`. Both take an
+optional `conn` and route through the `_conn_or` helper added during Task 3's fix round —
+that is what lets them be tested against an in-memory database without writing a file,
+which the Global Constraints require:
 
 ```python
-def vendor_review_invoices() -> list[dict]:
+def vendor_review_invoices(conn=None) -> list[dict]:
     """Invoices whose vendor could not be matched with confidence. Queued on the Fixer
     page's vendor tab; confirming one writes the raw string into that vendor's aliases,
     so the same spelling is never asked about twice."""
-    with _connect() as conn:
-        rows = conn.execute(
+    with _conn_or(conn) as c:
+        rows = c.execute(
             "SELECT * FROM invoices WHERE COALESCE(vendor_needs_review,0) = 1 "
             "ORDER BY id DESC"
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def set_invoice_vendor(invoice_id: int, vendor_id: int) -> None:
+def set_invoice_vendor(invoice_id: int, vendor_id: int, conn=None) -> None:
     """Bind an invoice to a vendor and clear its review flag.
 
     Deliberately does NOT touch vendor_name (provenance - it is what makes a bad merge
     reversible) or stored_file (the sidecar/assembler join key, whose copies already
     exist under data/Bank Rec/). Vendor changes never rename a filed PDF.
     """
-    with _connect() as conn:
-        conn.execute(
+    with _conn_or(conn) as c:
+        c.execute(
             "UPDATE invoices SET vendor_id = ?, vendor_needs_review = 0 WHERE id = ?",
             (vendor_id, invoice_id),
         )
 ```
+
+Then add behavioural tests for both, in `tests/test_migration.py`, using the same
+in-memory fixture pattern the `InvoiceDateQueries` class established in Task 3's fix
+round (build the schema with `db._SCHEMA`, apply `db._ensure_columns(conn)`, insert
+fixture rows with raw `INSERT INTO invoices (...)` rather than `db.insert_invoice`,
+which would open its own file-backed connection):
+
+```python
+class VendorQueries(unittest.TestCase):
+    """Behavioural tests for the vendor queries, against a real in-memory schema."""
+
+    def _db(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(db._SCHEMA)
+        db._ensure_columns(conn)
+        return conn
+
+    def test_only_flagged_invoices_are_queued(self):
+        conn = self._db()
+        conn.execute("INSERT INTO invoices (vendor_name, vendor_needs_review) "
+                     "VALUES ('Athens', 1)")
+        conn.execute("INSERT INTO invoices (vendor_name, vendor_needs_review) "
+                     "VALUES ('LADWP', 0)")
+        queued = db.vendor_review_invoices(conn=conn)
+        self.assertEqual([r["vendor_name"] for r in queued], ["Athens"])
+
+    def test_null_flag_is_not_queued(self):
+        # COALESCE(vendor_needs_review,0)=1 must treat NULL as "not flagged".
+        conn = self._db()
+        conn.execute("INSERT INTO invoices (vendor_name, vendor_needs_review) "
+                     "VALUES ('Athens', NULL)")
+        self.assertEqual(db.vendor_review_invoices(conn=conn), [])
+
+    def test_binding_a_vendor_clears_the_flag(self):
+        conn = self._db()
+        conn.execute("INSERT INTO invoices (vendor_name, vendor_needs_review) "
+                     "VALUES ('Athens', 1)")
+        inv_id = conn.execute("SELECT id FROM invoices").fetchone()["id"]
+        db.set_invoice_vendor(inv_id, 42, conn=conn)
+        row = conn.execute("SELECT * FROM invoices WHERE id = ?", (inv_id,)).fetchone()
+        self.assertEqual((row["vendor_id"], row["vendor_needs_review"]), (42, 0))
+        self.assertEqual(db.vendor_review_invoices(conn=conn), [])
+
+    def test_binding_a_vendor_never_touches_provenance_or_the_filed_pdf(self):
+        # vendor_name is provenance and stored_file is the sidecar/assembler join key
+        # whose copies already exist on disk. Neither may change on a vendor bind.
+        conn = self._db()
+        conn.execute("INSERT INTO invoices (vendor_name, stored_file, vendor_needs_review) "
+                     "VALUES ('ATHENS SERVICES', 'Athens_06_2026.pdf', 1)")
+        inv_id = conn.execute("SELECT id FROM invoices").fetchone()["id"]
+        db.set_invoice_vendor(inv_id, 42, conn=conn)
+        row = conn.execute("SELECT * FROM invoices WHERE id = ?", (inv_id,)).fetchone()
+        self.assertEqual(row["vendor_name"], "ATHENS SERVICES")
+        self.assertEqual(row["stored_file"], "Athens_06_2026.pdf")
+```
+
+That last test is the automated form of the `stored_file` constraint that Task 10 Step 5
+otherwise only checks by counting rows by hand.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
