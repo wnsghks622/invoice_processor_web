@@ -91,6 +91,26 @@ CREATE INDEX IF NOT EXISTS idx_invoices_stored     ON invoices(stored_file);
 CREATE INDEX IF NOT EXISTS idx_invoices_reconciled ON invoices(reconciled);
 """
 
+# Columns added after the original schema shipped. `_SCHEMA` uses CREATE TABLE IF NOT
+# EXISTS, which does nothing to a table that already exists - so every column added
+# later must go through _ensure_columns() instead. Append here; never edit _SCHEMA
+# alone for a column that existing databases won't have.
+_ADDED_COLUMNS = [
+    # (table, column, column DDL)
+]
+
+
+def _ensure_columns(conn, spec=None) -> None:
+    """Add any column in `spec` that the table doesn't already have. Idempotent, and
+    safe to call on every startup. A table that doesn't exist yet is skipped - the
+    CREATE in _SCHEMA will include the column, so there is nothing to add."""
+    for table, column, ddl in (_ADDED_COLUMNS if spec is None else spec):
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if not existing:                       # table absent: nothing to migrate
+            continue
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
 
 # --------------------------------------------------------------------------- connection
 
@@ -112,9 +132,10 @@ def _connect():
 
 
 def init() -> None:
-    """Create tables/indexes if absent. Idempotent."""
+    """Create tables/indexes if absent, then add any columns introduced later. Idempotent."""
     with _connect() as conn:
         conn.executescript(_SCHEMA)
+        _ensure_columns(conn)
 
 
 def is_empty() -> bool:
