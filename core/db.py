@@ -133,6 +133,20 @@ def _connect():
         conn.close()
 
 
+@contextmanager
+def _conn_or(conn):
+    """Yield an injected connection (tests) or open a short-lived one (production).
+
+    Lets query functions be exercised against an in-memory database without a file on
+    disk, which is what the test suite's no-filesystem-writes rule requires.
+    """
+    if conn is not None:
+        yield conn
+    else:
+        with _connect() as fresh:
+            yield fresh
+
+
 def init() -> None:
     """Create tables/indexes if absent, then add any columns introduced later. Idempotent."""
     with _connect() as conn:
@@ -409,21 +423,21 @@ def review_invoices() -> list[dict]:
     return list_invoices(needs_review=True)
 
 
-def unresolved_date_invoices() -> list[dict]:
+def unresolved_date_invoices(conn=None) -> list[dict]:
     """Invoices whose date could not be parsed. These are the date review queue - they
     are NOT dropped, because a dropped row is indistinguishable from a skipped month."""
-    with _connect() as conn:
-        rows = conn.execute(
+    with _conn_or(conn) as c:
+        rows = c.execute(
             "SELECT * FROM invoices WHERE COALESCE(invoice_date_iso,'') = '' "
             "ORDER BY id DESC"
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def set_invoice_date(invoice_id: int, raw: str, iso: str) -> None:
+def set_invoice_date(invoice_id: int, raw: str, iso: str, conn=None) -> None:
     """Write the raw date and its parsed form together, so the two can never disagree."""
-    with _connect() as conn:
-        conn.execute(
+    with _conn_or(conn) as c:
+        c.execute(
             "UPDATE invoices SET invoice_date = ?, invoice_date_iso = ? WHERE id = ?",
             (raw, iso, invoice_id),
         )

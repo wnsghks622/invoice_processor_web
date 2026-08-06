@@ -61,5 +61,98 @@ class AddedColumnsRegistry(unittest.TestCase):
         self.assertIn("invoice_date_iso", db.INVOICE_COLUMNS)
 
 
+class InvoiceDateQueries(unittest.TestCase):
+    """Behavioural tests for the date queries, against a real in-memory schema.
+
+    Also the first test to exercise _ensure_columns' spec=None path, which is the
+    one db.init() uses in production.
+    """
+
+    def _db(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(db._SCHEMA)
+        db._ensure_columns(conn)  # spec=None path, as init() calls it
+        return conn
+
+    def test_empty_iso_is_unresolved(self):
+        """A row with invoice_date_iso = '' is returned by unresolved_date_invoices."""
+        conn = self._db()
+        conn.execute(
+            "INSERT INTO invoices (id, vendor_name, invoice_date, invoice_date_iso) "
+            "VALUES (1, 'Test Vendor', '2024-01-15', '')"
+        )
+        result = db.unresolved_date_invoices(conn=conn)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["id"], 1)
+
+    def test_iso_value_is_resolved(self):
+        """A row with a real ISO value is not returned by unresolved_date_invoices."""
+        conn = self._db()
+        conn.execute(
+            "INSERT INTO invoices (id, vendor_name, invoice_date, invoice_date_iso) "
+            "VALUES (1, 'Test Vendor', '2024-01-15', '2024-01-15')"
+        )
+        result = db.unresolved_date_invoices(conn=conn)
+        self.assertEqual(len(result), 0)
+
+    def test_null_iso_is_unresolved(self):
+        """A row where invoice_date_iso is SQL NULL is also returned - this is what
+        the COALESCE is for, and a plain = '' comparison would miss it."""
+        conn = self._db()
+        conn.execute(
+            "INSERT INTO invoices (id, vendor_name, invoice_date, invoice_date_iso) "
+            "VALUES (1, 'Test Vendor', '2024-01-15', NULL)"
+        )
+        result = db.unresolved_date_invoices(conn=conn)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["id"], 1)
+
+    def test_set_invoice_date_writes_both_columns(self):
+        """set_invoice_date writes both invoice_date and invoice_date_iso in one call,
+        and the row then disappears from unresolved_date_invoices."""
+        conn = self._db()
+        conn.execute(
+            "INSERT INTO invoices (id, vendor_name, invoice_date, invoice_date_iso) "
+            "VALUES (1, 'Test Vendor', '', '')"
+        )
+        # Verify the row is unresolved before
+        result_before = db.unresolved_date_invoices(conn=conn)
+        self.assertEqual(len(result_before), 1)
+
+        # Call set_invoice_date
+        db.set_invoice_date(1, "2024-01-15", "2024-01-15", conn=conn)
+
+        # Verify both columns were written
+        row = conn.execute("SELECT invoice_date, invoice_date_iso FROM invoices WHERE id=1").fetchone()
+        self.assertEqual(row["invoice_date"], "2024-01-15")
+        self.assertEqual(row["invoice_date_iso"], "2024-01-15")
+
+        # Verify the row is no longer unresolved
+        result_after = db.unresolved_date_invoices(conn=conn)
+        self.assertEqual(len(result_after), 0)
+
+    def test_results_are_newest_first(self):
+        """Results come back newest-first (ORDER BY id DESC)."""
+        conn = self._db()
+        conn.execute(
+            "INSERT INTO invoices (id, vendor_name, invoice_date, invoice_date_iso) "
+            "VALUES (1, 'Vendor A', '2024-01-15', '')"
+        )
+        conn.execute(
+            "INSERT INTO invoices (id, vendor_name, invoice_date, invoice_date_iso) "
+            "VALUES (2, 'Vendor B', '2024-01-16', '')"
+        )
+        conn.execute(
+            "INSERT INTO invoices (id, vendor_name, invoice_date, invoice_date_iso) "
+            "VALUES (3, 'Vendor C', '2024-01-17', '')"
+        )
+        result = db.unresolved_date_invoices(conn=conn)
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result[0]["id"], 3)
+        self.assertEqual(result[1]["id"], 2)
+        self.assertEqual(result[2]["id"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
