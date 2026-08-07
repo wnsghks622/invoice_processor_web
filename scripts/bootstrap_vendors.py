@@ -9,7 +9,8 @@ Apply (creates one vendor per cluster, with every raw spelling as an alias):
 
     python scripts/bootstrap_vendors.py --apply
 
-Safe to re-run: a cluster whose canonical name already exists is skipped.
+Safe to re-run: a cluster is skipped if any spelling in it already identifies a known
+vendor, not only its most-frequent (canonical) spelling.
 Review the multi-member clusters before applying - the script never merges two vendors
 that a human has not looked at.
 """
@@ -71,6 +72,18 @@ def _known_identities(vendors: list[dict]) -> set:
     return known
 
 
+def _cluster_is_known(group: list[str], existing: set) -> bool:
+    """True if ANY spelling in the cluster - not just group[0], the most-frequent one -
+    already identifies a known vendor.
+
+    Checking only the canonical spelling missed clusters where that spelling was brand
+    new but a less-frequent member was already a known alias - e.g. a fresh 'LADWP
+    Consolidated Billing Statement' cluster that also contains the already-known alias
+    'LA DWP' bypassed the check entirely and would create a duplicate LADWP vendor,
+    splitting future matching across two vendor_ids with no error raised."""
+    return any(m.strip().lower() in existing for m in group)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true", help="write vendors (default: dry run)")
@@ -96,7 +109,7 @@ def main() -> int:
     created = skipped = 0
     for group in groups:
         canonical = group[0]                    # most frequent spelling wins
-        if canonical.strip().lower() in existing:
+        if _cluster_is_known(group, existing):
             skipped += 1
             continue
         if args.apply:
