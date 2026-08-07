@@ -182,6 +182,18 @@ def cluster(names: list[str], threshold: float = 0.86) -> list[list[str]]:
     return groups
 
 
+def record_fields(result: MatchResult) -> dict:
+    """Turn a MatchResult into the two invoice column values it implies.
+
+    A 'suggest' keeps the candidate id so the review screen can pre-select it, but still
+    flags the row - a suggestion that bound itself would make the queue pointless.
+    """
+    return {
+        "vendor_id": result.vendor_id if result.outcome != "new" else None,
+        "vendor_needs_review": 0 if result.outcome == "bind" else 1,
+    }
+
+
 def append_alias(existing: Optional[str], raw: Optional[str]) -> str:
     """Add a raw spelling to a vendor's semicolon-separated alias list.
 

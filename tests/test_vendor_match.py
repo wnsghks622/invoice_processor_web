@@ -145,5 +145,51 @@ class Cluster(unittest.TestCase):
         self.assertEqual(vm.cluster([]), [])
 
 
+class ResultToRecordFields(unittest.TestCase):
+    """A MatchResult has to become two column values. Both outcomes below must set
+    vendor_needs_review, because an unreviewed 'suggest' silently binding would defeat
+    the point of the queue."""
+
+    def test_bind_sets_vendor_and_clears_flag(self):
+        fields = vm.record_fields(vm.MatchResult("bind", 3, 1.0, "exact"))
+        self.assertEqual(fields, {"vendor_id": 3, "vendor_needs_review": 0})
+
+    def test_suggest_records_candidate_but_flags_for_review(self):
+        fields = vm.record_fields(vm.MatchResult("suggest", 5, 0.88, "close-spelling"))
+        self.assertEqual(fields, {"vendor_id": 5, "vendor_needs_review": 1})
+
+    def test_new_leaves_vendor_null_and_flags_for_review(self):
+        fields = vm.record_fields(vm.MatchResult("new", None, 0.0, "no-match"))
+        self.assertEqual(fields, {"vendor_id": None, "vendor_needs_review": 1})
+
+
+class RecordCarriesVendorId(unittest.TestCase):
+    """End-to-end through the record builder, still with no database: the vendor list is
+    passed in, so purity is preserved."""
+
+    def _record(self, vendor_name, vendors):
+        from core import processor as ip
+        return ip.build_invoice_record(
+            {"vendor_name": vendor_name, "invoice_number": "A1",
+             "invoice_date": "06/01/2026", "total_amount": "100.00",
+             "property": "Kenmore Plaza"},
+            source_file="x.pdf", status="OK", date_processed="06/03/2026",
+            stored_file="Athens_06_2026.pdf", vendors=vendors,
+        )
+
+    def test_known_vendor_binds(self):
+        rec = self._record("ATHENS SERVICES", VENDORS)
+        self.assertEqual((rec["vendor_id"], rec["vendor_needs_review"]), (1, 0))
+
+    def test_unknown_vendor_queues_and_keeps_raw_name(self):
+        rec = self._record("Rolling Greens Nursery", VENDORS)
+        self.assertEqual((rec["vendor_id"], rec["vendor_needs_review"]), (None, 1))
+        self.assertEqual(rec["vendor_name"], "Rolling Greens Nursery")
+
+    def test_no_vendor_list_touches_no_database(self):
+        rec = self._record("Athens Services", None)
+        self.assertEqual((rec["vendor_id"], rec["vendor_needs_review"]), (None, 1))
+
+
 if __name__ == "__main__":
     unittest.main()

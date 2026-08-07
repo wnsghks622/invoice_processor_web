@@ -464,6 +464,32 @@ def review_invoices() -> list[dict]:
     return list_invoices(needs_review=True)
 
 
+def vendor_review_invoices(conn=None) -> list[dict]:
+    """Invoices whose vendor could not be matched with confidence. Queued on the Fixer
+    page's vendor tab; confirming one writes the raw string into that vendor's aliases,
+    so the same spelling is never asked about twice."""
+    with _conn_or(conn) as c:
+        rows = c.execute(
+            "SELECT * FROM invoices WHERE COALESCE(vendor_needs_review,0) = 1 "
+            "ORDER BY id DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_invoice_vendor(invoice_id: int, vendor_id: int, conn=None) -> None:
+    """Bind an invoice to a vendor and clear its review flag.
+
+    Deliberately does NOT touch vendor_name (provenance - it is what makes a bad merge
+    reversible) or stored_file (the sidecar/assembler join key, whose copies already
+    exist under data/Bank Rec/). Vendor changes never rename a filed PDF.
+    """
+    with _conn_or(conn) as c:
+        c.execute(
+            "UPDATE invoices SET vendor_id = ?, vendor_needs_review = 0 WHERE id = ?",
+            (vendor_id, invoice_id),
+        )
+
+
 def unresolved_date_invoices(conn=None) -> list[dict]:
     """Invoices whose date could not be parsed. These are the date review queue - they
     are NOT dropped, because a dropped row is indistinguishable from a skipped month."""

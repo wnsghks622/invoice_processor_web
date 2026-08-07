@@ -309,5 +309,54 @@ class InvoiceDateQueries(unittest.TestCase):
         self.assertEqual(result[2]["id"], 1)
 
 
+class VendorQueries(unittest.TestCase):
+    """Behavioural tests for the vendor queries, against a real in-memory schema."""
+
+    def _db(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.executescript(db._SCHEMA)
+        db._ensure_columns(conn)
+        return conn
+
+    def test_only_flagged_invoices_are_queued(self):
+        conn = self._db()
+        conn.execute("INSERT INTO invoices (vendor_name, vendor_needs_review) "
+                     "VALUES ('Athens', 1)")
+        conn.execute("INSERT INTO invoices (vendor_name, vendor_needs_review) "
+                     "VALUES ('LADWP', 0)")
+        queued = db.vendor_review_invoices(conn=conn)
+        self.assertEqual([r["vendor_name"] for r in queued], ["Athens"])
+
+    def test_null_flag_is_not_queued(self):
+        # COALESCE(vendor_needs_review,0)=1 must treat NULL as "not flagged".
+        conn = self._db()
+        conn.execute("INSERT INTO invoices (vendor_name, vendor_needs_review) "
+                     "VALUES ('Athens', NULL)")
+        self.assertEqual(db.vendor_review_invoices(conn=conn), [])
+
+    def test_binding_a_vendor_clears_the_flag(self):
+        conn = self._db()
+        conn.execute("INSERT INTO invoices (vendor_name, vendor_needs_review) "
+                     "VALUES ('Athens', 1)")
+        inv_id = conn.execute("SELECT id FROM invoices").fetchone()["id"]
+        db.set_invoice_vendor(inv_id, 42, conn=conn)
+        row = conn.execute("SELECT * FROM invoices WHERE id = ?", (inv_id,)).fetchone()
+        self.assertEqual((row["vendor_id"], row["vendor_needs_review"]), (42, 0))
+        self.assertEqual(db.vendor_review_invoices(conn=conn), [])
+
+    def test_binding_a_vendor_never_touches_provenance_or_the_filed_pdf(self):
+        # vendor_name is provenance and stored_file is the sidecar/assembler join key
+        # whose copies already exist on disk. Neither may change on a vendor bind.
+        conn = self._db()
+        conn.execute("INSERT INTO invoices (vendor_name, stored_file, vendor_needs_review) "
+                     "VALUES ('ATHENS SERVICES', 'Athens_06_2026.pdf', 1)")
+        inv_id = conn.execute("SELECT id FROM invoices").fetchone()["id"]
+        db.set_invoice_vendor(inv_id, 42, conn=conn)
+        row = conn.execute("SELECT * FROM invoices WHERE id = ?", (inv_id,)).fetchone()
+        self.assertEqual(row["vendor_name"], "ATHENS SERVICES")
+        self.assertEqual(row["stored_file"], "Athens_06_2026.pdf")
+
+
 if __name__ == "__main__":
     unittest.main()
