@@ -395,13 +395,16 @@ Day-of-month spread across those recurring pairs:
 
 ```
    invoice_date    median spread  2.0 days   (30 of 49 pairs within a 3-day window)
-   date_processed  median spread 16   days   (14 of 47 that tight)
+   date_processed  median spread 15   days   (17 of 49 that tight)
 ```
 
 **This is the finding the timing model rests on**, and it is stable: re-measured under both
 a narrow parser and the app's own parser, the median spread is 2.0 days either way (48 vs 49
-pairs, 29 vs 30 within three days). `date_processed` records when the user got to the
-invoice — batching makes it noise. `invoice_date` records when the vendor billed.
+pairs, 29 vs 30 within three days), and stable again post vendor-merge (see the caveat
+below). `date_processed` records when the user got to the invoice — batching makes it noise.
+`invoice_date` records when the vendor billed; the gap between the two rows above is the
+whole point. The `date_processed` row is the post-merge figure; it moved slightly from the
+pre-merge 16 days / 14 of 47 — see the caveat for why.
 
 Amount stability is also learnable and varies widely: some pairs are fixed
 (`rolling greens` at 790.50, `athens / 10630 Santa Monica` at 1,125.06), some tight
@@ -410,12 +413,19 @@ Amount stability is also learnable and varies widely: some pairs are fixed
 
 **Two caveats that must survive into implementation:**
 
-- **These are pre-merge figures.** Pairs were keyed on *normalized raw vendor strings*, not
-  on merged vendor identities. §6.5 collapses 95 raw strings to 82 clusters, and vendor
-  identity ships first (§13). The pair count and the profiles **must be re-measured after
-  Phase 1**; some pairs currently reading `irregular` will become `monthly` once their two
-  spellings merge. This is an argument for the design, not against it — but 49 is a
-  pre-merge number and should not be quoted as settled.
+- **Re-measured post-merge, 2026-08-06.** Vendor identity shipped (§13 Phase 1, Tasks 1–10):
+  86 vendors bootstrapped from history, `vendor_id` bound on all 267 invoices. Re-running the
+  §5.2 query grouped on `(property, vendor_id)` instead of normalized raw vendor strings
+  gives **the same 49 recurring pairs, the same 2.0-day median `invoice_date` spread, and the
+  same 30 of 49 within three days** — the merge moved nothing, and no pair flipped from
+  `irregular` to `monthly`. Traced why: of the 86 vendors, only 7 combine more than one raw
+  spelling within a single property (the axis pairs are keyed on), 6 of those 7 already
+  normalized to the same string pre-merge (case/whitespace/punctuation only — e.g. `US METRO
+  BANK` vs `US Metro Bank`), and the seventh (`CITI BLINDS` vs `Citi Blinds, INC.`) doesn't
+  reach two distinct months either way. 49 is now a confirmed number, not a provisional one.
+  `date_processed` moved a little on the same re-measurement (16 → 15 days median, 14 of 47 →
+  17 of 49 tight): merging gave two pairs enough extra rows to have a computable spread at
+  all. This will need re-measuring again once the Phase 2 import (§8) lands more history.
 - **Two complete months is thin.** At launch the learned half is modest and low-confidence,
   and the two authoritative lists carry the load. Confidence tightens every month the system
   runs. This is a stated property, not a defect to work around.

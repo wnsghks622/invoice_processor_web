@@ -201,6 +201,16 @@ whether OCR is available at the start of each run.
 **"Blocked: this request came from another website"** — the app only accepts requests from its own
 pages, to stop other websites from triggering it in your browser. Navigate from within the app.
 
+**An invoice's date shows as blank** — the app could not read the date the vendor printed.
+Open **Needs Review**; unreadable dates are listed at the top with a date picker. They are
+held out of monthly totals until resolved rather than being silently dropped, because a
+dropped invoice looks identical to a vendor who skipped a month.
+
+**The app asks about a vendor spelling** — a vendor's name was printed differently enough
+that the match was not certain. Confirm it once on **Needs Review** and that spelling is
+added to the vendor's aliases, so it is never asked about again. Confirming a vendor never
+renames an already-filed PDF.
+
 ---
 
 ## How it works
