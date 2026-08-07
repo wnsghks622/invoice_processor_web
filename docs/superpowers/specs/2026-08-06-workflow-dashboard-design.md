@@ -423,9 +423,17 @@ Amount stability is also learnable and varies widely: some pairs are fixed
   normalized to the same string pre-merge (case/whitespace/punctuation only — e.g. `US METRO
   BANK` vs `US Metro Bank`), and the seventh (`CITI BLINDS` vs `Citi Blinds, INC.`) doesn't
   reach two distinct months either way. 49 is now a confirmed number, not a provisional one.
-  `date_processed` moved a little on the same re-measurement (16 → 15 days median, 14 of 47 →
-  17 of 49 tight): merging gave two pairs enough extra rows to have a computable spread at
-  all. This will need re-measuring again once the Phase 2 import (§8) lands more history.
+  `date_processed` reads slightly different today (16 → 15 days median, 14 of 47 → 17 of 49
+  tight), but that shift is **not shown to be caused by the merge** — tested and rejected:
+  re-grouping the current 267 rows by normalized raw vendor string instead of `vendor_id`
+  also yields 49 of 49 usable pairs, not 47 (every row's `date_processed` parses today; 0
+  empty, 0 unparseable), so no grouping scheme on the present data reproduces a 47
+  denominator. The pre-merge "14 of 47" baseline predates this dataset snapshot; the likelier
+  explanation is invoices processed in the interval, not vendor identity, but the cause was
+  not independently isolated and should not be asserted. Either way the contrast holds:
+  `invoice_date` clusters at a 2-day median against `date_processed`'s 15 — the same wide gap
+  the pre-merge numbers showed (2 vs 16). This will need re-measuring again once the Phase 2
+  import (§8) lands more history.
 - **Two complete months is thin.** At launch the learned half is modest and low-confidence,
   and the two authoritative lists carry the load. Confidence tightens every month the system
   runs. This is a stated property, not a defect to work around.
