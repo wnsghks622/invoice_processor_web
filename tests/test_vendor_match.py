@@ -131,6 +131,7 @@ class Cluster(unittest.TestCase):
             ("James Chin", "James Chin (Stamp Reimbursement)"),
             ("City of Los Angeles",
              "City of Los Angeles, Department of Public Works, Bureau of Sanitation"),
+            ("South Coast Mechanical, LLC", "South Coast Mechanical, Inc."),
         ]
         for left, right in pairs:
             with self.subTest(pair=(left, right)):

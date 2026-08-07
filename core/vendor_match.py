@@ -26,6 +26,18 @@ _NOISE = re.compile(
     r"services|service|us|usa)\b"
 )
 
+# Legal-entity-type words normalize() treats as noise (correctly, for match()'s looser
+# purpose - a returning vendor rarely changes structure). cluster() is deliberately
+# stricter: 'South Coast Mechanical, LLC' and 'South Coast Mechanical, Inc.' normalize
+# to the identical string once both suffixes are stripped, but an LLC and an Inc. may be
+# related-and-distinct legal entities, not a spelling variant. Only the words that name a
+# specific legal structure are listed - 'company'/'co' is generic and stays plain noise.
+_ENTITY_TYPE = re.compile(r"\b(inc|llc|ltd|lp|corp|corporation)\b")
+
+
+def _entity_types(name: Optional[str]) -> frozenset:
+    return frozenset(_ENTITY_TYPE.findall((name or "").lower()))
+
 
 class MatchResult(NamedTuple):
     outcome: str              # "bind" | "suggest" | "new"
@@ -141,6 +153,11 @@ def cluster(names: list[str], threshold: float = 0.86) -> list[list[str]]:
 
     Substring containment alone is NOT treated as a match - 'Michelle Suh' is inside
     'Michelle Suh (Rooter Plumbing)' but they may be a person and a plumbing company.
+
+    A high normalize() ratio alone is also NOT enough when it is only high because two
+    DIFFERENT legal-entity-type words were both stripped as noise - 'South Coast
+    Mechanical, LLC' and 'South Coast Mechanical, Inc.' both reduce to 'south coast
+    mechanical', but an LLC and an Inc. may be related-and-distinct legal entities.
     """
     import collections
 
@@ -148,12 +165,17 @@ def cluster(names: list[str], threshold: float = 0.86) -> list[list[str]]:
     groups: list[list[str]] = []
     for name in sorted(counts, key=lambda n: (-counts[n], n)):
         key = normalize(name)
+        entities = _entity_types(name)
         placed = False
         for group in groups:
-            if any(difflib.SequenceMatcher(None, key, normalize(m)).ratio() >= threshold
-                   for m in group):
-                group.append(name)
-                placed = True
+            for m in group:
+                same_entity = not entities or not _entity_types(m) or entities == _entity_types(m)
+                if (same_entity
+                        and difflib.SequenceMatcher(None, key, normalize(m)).ratio() >= threshold):
+                    group.append(name)
+                    placed = True
+                    break
+            if placed:
                 break
         if not placed:
             groups.append([name])
