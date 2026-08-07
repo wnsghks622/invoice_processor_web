@@ -8,7 +8,9 @@ Run from the project root:
 import sqlite3
 import sys
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -79,19 +81,28 @@ class VendorIdentityMigrationRegression(unittest.TestCase):
     """Regression tests for the vendor identity schema migration.
 
     Task 6 added vendor_id and vendor_needs_review to invoices, and canonical_name
-    and active to vendors. These tests verify the migration path and the self-healing
-    property that separating table DDL from index DDL restores.
+    and active to vendors. These tests verify that db.init() properly handles:
+    1. Migrating existing databases whose tables predate the new columns
+    2. The self-healing property: columns in _ADDED_COLUMNS are applied to fresh
+       databases even if not in _SCHEMA_TABLES
+
+    Both tests patch db._connect to exercise the real db.init() function.
     """
 
-    def test_migration_of_old_invoices_table_without_vendor_columns(self):
-        """Regression: db.init() must not crash when vendor_id index references
-        a non-existent column in an existing table. This is the core bug that
-        motivated separating table DDL from index DDL."""
+    def test_upgrade_existing_database_without_vendor_columns(self):
+        """Verify db.init() successfully migrates a pre-Task-6 database.
+
+        Pre-Task-6 invoices and vendors tables lack the new columns. The correct
+        ordering (tables→migrate→indexes) ensures indexes can reference newly-added
+        columns. Under the pre-round-1 ordering (executescript(_SCHEMA) first,
+        _ensure_columns second), the index creation fails because vendor_id doesn't
+        exist yet on an existing table.
+        """
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
 
-        # Create invoices table with the OLD schema (without vendor_id and vendor_needs_review)
-        old_invoices_schema = """
+        # Create pre-Task-6 invoices and vendors tables
+        pre_task6_schema = """
         CREATE TABLE IF NOT EXISTS invoices (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
             status           TEXT DEFAULT 'OK',
@@ -115,22 +126,42 @@ class VendorIdentityMigrationRegression(unittest.TestCase):
             carried_forward  TEXT DEFAULT '',
             needs_review     INTEGER DEFAULT 0,
             origin           TEXT DEFAULT 'processor'
-        )
+        );
+        CREATE TABLE IF NOT EXISTS vendors (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            short_name TEXT NOT NULL UNIQUE,
+            aliases    TEXT DEFAULT ''
+        );
+        CREATE TABLE IF NOT EXISTS properties (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            canonical_name TEXT NOT NULL UNIQUE,
+            property_code  TEXT DEFAULT '',
+            aliases        TEXT DEFAULT '',
+            sort_order     INTEGER DEFAULT 0
+        );
         """
-        conn.executescript(old_invoices_schema)
-
-        # Insert a row to simulate an existing database
+        conn.executescript(pre_task6_schema)
         conn.execute("INSERT INTO invoices (vendor_name) VALUES ('Test Vendor')")
+        conn.execute("INSERT INTO vendors (short_name) VALUES ('TestV')")
 
-        # Now run the three-step init sequence that db.init() uses
-        conn.executescript(db._SCHEMA_TABLES)      # Tables: no-op since they exist
-        db._ensure_columns(conn)                    # Add missing columns
-        conn.executescript(db._SCHEMA_INDEXES)      # Indexes: now vendor_id column exists
+        @contextmanager
+        def fake_connect():
+            with conn:
+                yield conn
+
+        # Patch _connect so db.init() uses our pre-Task-6 connection
+        with mock.patch.object(db, "_connect", fake_connect):
+            # Call the real db.init()
+            db.init()
 
         # Verify the columns were added
         cols = {r[1] for r in conn.execute("PRAGMA table_info(invoices)")}
         self.assertIn("vendor_id", cols)
         self.assertIn("vendor_needs_review", cols)
+
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(vendors)")}
+        self.assertIn("canonical_name", cols)
+        self.assertIn("active", cols)
 
         # Verify the index was created
         indices = {r[0] for r in conn.execute(
@@ -140,35 +171,47 @@ class VendorIdentityMigrationRegression(unittest.TestCase):
 
         # Verify data was preserved
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM invoices").fetchone()[0], 1)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM vendors").fetchone()[0], 1)
 
         conn.close()
 
-    def test_self_healing_property_on_fresh_database(self):
-        """Regression: columns registered only in _ADDED_COLUMNS must still be
-        applied to fresh databases. This property is only preserved when tables are
-        created before _ensure_columns runs."""
+    def test_self_healing_property_columns_in_added_columns_only(self):
+        """Verify columns in _ADDED_COLUMNS are applied to fresh databases.
+
+        This property requires tables to be created before _ensure_columns runs.
+        Under round-1's ordering (_ensure_columns before executescript),
+        _ensure_columns runs on a fresh database where no tables exist, skips them
+        (per its design), and columns registered only in _ADDED_COLUMNS are never
+        added. The correct ordering (tables→migrate→indexes) ensures tables exist
+        before migration, so the fake column is successfully added.
+        """
         conn = sqlite3.connect(":memory:")
         conn.row_factory = sqlite3.Row
 
-        # Create a temporary fake column that is in _ADDED_COLUMNS but NOT in _SCHEMA
-        fake_spec = [
+        # Create a fake column that is in _ADDED_COLUMNS but NOT in _SCHEMA_TABLES
+        fake_added_columns = [
             ("invoices", "fake_regression_test_column", "TEXT DEFAULT 'regression_test'"),
         ]
 
-        # Run the three-step sequence with a fake column
-        conn.executescript(db._SCHEMA_TABLES)      # Tables are created empty
-        db._ensure_columns(conn, spec=fake_spec)    # Fake column added to existing table
-        conn.executescript(db._SCHEMA_INDEXES)      # Indexes created
+        @contextmanager
+        def fake_connect():
+            with conn:
+                yield conn
 
-        # Verify the fake column was added to the existing table
+        # Patch both _connect and _ADDED_COLUMNS so db.init() sees the fake column
+        with mock.patch.object(db, "_connect", fake_connect):
+            with mock.patch.object(db, "_ADDED_COLUMNS", fake_added_columns):
+                # Call the real db.init() which will create tables, add columns, create indexes
+                db.init()
+
+        # Verify the fake column was added to the invoices table
         cols = {r[1] for r in conn.execute("PRAGMA table_info(invoices)")}
         self.assertIn("fake_regression_test_column", cols)
 
-        # Verify the default value is set
-        row = conn.execute(
-            "INSERT INTO invoices (vendor_name) VALUES ('Test') RETURNING *"
-        ).fetchone()
-        self.assertEqual(row["fake_regression_test_column"], "regression_test")
+        # Verify the default value works
+        conn.execute("INSERT INTO invoices (vendor_name) VALUES ('Test')")
+        row = conn.execute("SELECT fake_regression_test_column FROM invoices WHERE id=1").fetchone()
+        self.assertEqual(row[0], "regression_test")
 
         conn.close()
 
