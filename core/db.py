@@ -276,6 +276,25 @@ def update_vendor(vendor_id: int, short_name: str, aliases: str) -> None:
                      (short_name.strip(), aliases.strip(), vendor_id))
 
 
+def update_vendor_identity(vendor_id: int, canonical_name: str = None,
+                           active: int = None) -> None:
+    """Set the identity fields added after the vendors table shipped. Only the arguments
+    actually supplied are written, so callers can update one field without clobbering
+    the other."""
+    sets, params = [], []
+    if canonical_name is not None:
+        sets.append("canonical_name = ?")
+        params.append(canonical_name)
+    if active is not None:
+        sets.append("active = ?")
+        params.append(int(active))
+    if not sets:
+        return
+    params.append(vendor_id)
+    with _connect() as conn:
+        conn.execute(f"UPDATE vendors SET {', '.join(sets)} WHERE id = ?", params)
+
+
 def delete_vendor(vendor_id: int) -> None:
     with _connect() as conn:
         conn.execute("DELETE FROM vendors WHERE id=?", (vendor_id,))

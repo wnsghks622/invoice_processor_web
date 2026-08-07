@@ -113,5 +113,36 @@ class AppendAlias(unittest.TestCase):
         self.assertEqual(vm.append_alias(" A ;; B ", "C"), "A; B; C")
 
 
+class Cluster(unittest.TestCase):
+    def test_case_variants_group_together(self):
+        groups = vm.cluster([
+            "Mitsubishi Electric US, Inc.", "MITSUBISHI ELECTRIC US, INC.",
+            "Ganahl Lumber Company", "GANAHL LUMBER COMPANY",
+        ])
+        sizes = sorted(len(g) for g in groups)
+        self.assertEqual(sizes, [2, 2])
+
+    def test_genuinely_different_vendors_stay_separate(self):
+        # These four are the real ambiguous cases from the live data. Each pair MUST
+        # stay split - merging them silently would erase a real distinction that only
+        # a human can adjudicate.
+        pairs = [
+            ("Michelle Suh", "Michelle Suh (Rooter Plumbing)"),
+            ("James Chin", "James Chin (Stamp Reimbursement)"),
+            ("City of Los Angeles",
+             "City of Los Angeles, Department of Public Works, Bureau of Sanitation"),
+        ]
+        for left, right in pairs:
+            with self.subTest(pair=(left, right)):
+                groups = vm.cluster([left, right])
+                self.assertEqual(len(groups), 2, f"{left!r} and {right!r} must not merge")
+
+    def test_singleton_input_gives_one_group(self):
+        self.assertEqual(vm.cluster(["Rolling Greens"]), [["Rolling Greens"]])
+
+    def test_empty_input_gives_no_groups(self):
+        self.assertEqual(vm.cluster([]), [])
+
+
 if __name__ == "__main__":
     unittest.main()

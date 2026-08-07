@@ -131,6 +131,35 @@ def match(raw: Optional[str], vendors: list[dict]) -> MatchResult:
     return _classify(best_score, best_id, "close-spelling")
 
 
+def cluster(names: list[str], threshold: float = 0.86) -> list[list[str]]:
+    """Group raw vendor strings that are probably the same vendor.
+
+    Used once, at bootstrap, to turn the raw strings already in the invoice table into a
+    starting vendor list. Deliberately conservative: it is far cheaper for a human to
+    merge two groups than to discover months later that two real vendors were silently
+    combined and their expectations tangled.
+
+    Substring containment alone is NOT treated as a match - 'Michelle Suh' is inside
+    'Michelle Suh (Rooter Plumbing)' but they may be a person and a plumbing company.
+    """
+    import collections
+
+    counts = collections.Counter(n for n in names if (n or "").strip())
+    groups: list[list[str]] = []
+    for name in sorted(counts, key=lambda n: (-counts[n], n)):
+        key = normalize(name)
+        placed = False
+        for group in groups:
+            if any(difflib.SequenceMatcher(None, key, normalize(m)).ratio() >= threshold
+                   for m in group):
+                group.append(name)
+                placed = True
+                break
+        if not placed:
+            groups.append([name])
+    return groups
+
+
 def append_alias(existing: Optional[str], raw: Optional[str]) -> str:
     """Add a raw spelling to a vendor's semicolon-separated alias list.
 
