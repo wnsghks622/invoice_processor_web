@@ -42,6 +42,46 @@ that property's pending pool (and the filed PDF moves too).</p>
 </section>
 {% endif %}
 
+{% if unvendored %}
+<section class="panel">
+  <div class="panel-head">
+    <div class="panel-title">Vendors needing confirmation</div>
+    <div class="panel-note">{{ unvendored|length }} invoice{{ '' if unvendored|length == 1 else 's' }}</div>
+  </div>
+  <p class="muted">
+    Confirming also teaches the app this spelling &mdash; you will not be asked about it again.
+  </p>
+  <table class="props">
+    <thead>
+      <tr><th>As printed on the invoice</th><th>Property</th><th>Match to</th></tr>
+    </thead>
+    <tbody>
+    {% for inv in unvendored %}
+      <tr>
+        <td><code>{{ inv.vendor_name or '(no vendor)' }}</code></td>
+        <td>{{ inv.property or '(none)' }}</td>
+        <td>
+          <form method="post" action="{{ url_for('fixer_set_vendor', invoice_id=inv.id) }}">
+            <select name="vendor_id" required>
+              <option value="">Choose a vendor&hellip;</option>
+              {% for v in vendors %}
+                <option value="{{ v.id }}"
+                  {% if inv.suggestion.vendor_id == v.id %}selected{% endif %}>
+                  {{ v.canonical_name or v.short_name }}
+                  {%- if inv.suggestion.vendor_id == v.id %} (suggested){% endif %}
+                </option>
+              {% endfor %}
+            </select>
+            <button class="btn" type="submit">Confirm</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
 {% if reviews %}
 <div class="table-card">
 <table class="invoices">

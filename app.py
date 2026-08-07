@@ -436,13 +436,19 @@ def delete_vendor(vendor_id):
 
 @app.route("/fixer")
 def fixer():
+    from core import vendor_match
     reviews = db.review_invoices()
     for r in reviews:                    # let each row link to its PDF (lives in Needs Review/)
         r["has_file"] = state.resolve_invoice_file(r) is not None
-    undated = db.unresolved_date_invoices()
+    vendors = db.all_vendors()
+    unvendored = db.vendor_review_invoices()
+    for r in unvendored:                 # pre-select the best candidate on each row
+        r["suggestion"] = vendor_match.match(r.get("vendor_name"), vendors)
     return render_template("fixer.html",
                            reviews=reviews,
-                           undated=undated,
+                           undated=db.unresolved_date_invoices(),
+                           unvendored=unvendored,
+                           vendors=vendors,
                            properties=db.all_properties())
 
 
@@ -486,6 +492,37 @@ def fixer_set_date(invoice_id):
         return redirect(url_for("fixer"))
     db.set_invoice_date(invoice_id, iso, iso)
     flash(f"Date set to {iso}.")
+    return redirect(url_for("fixer"))
+
+
+@app.route("/fixer/<int:invoice_id>/vendor", methods=["POST"])
+def fixer_set_vendor(invoice_id):
+    """Confirm which vendor an invoice belongs to.
+
+    Confirming also writes the raw extracted string into that vendor's aliases, which is
+    what makes the queue shrink: the same spelling is never asked about twice.
+    """
+    chosen = request.form.get("vendor_id", "").strip()
+    if not chosen.isdigit():
+        flash("Pick a vendor.")
+        return redirect(url_for("fixer"))
+    vendor_id = int(chosen)
+    inv = db.get_invoice(invoice_id)
+    if not inv:
+        flash("That invoice no longer exists.")
+        return redirect(url_for("fixer"))
+    vendor = next((v for v in db.all_vendors() if v["id"] == vendor_id), None)
+    if not vendor:
+        flash("That vendor no longer exists.")
+        return redirect(url_for("fixer"))
+
+    from core import vendor_match
+    updated = vendor_match.append_alias(vendor.get("aliases"), inv.get("vendor_name"))
+    if updated != (vendor.get("aliases") or ""):
+        db.update_vendor(vendor_id, vendor["short_name"], updated)
+
+    db.set_invoice_vendor(invoice_id, vendor_id)
+    flash(f"Matched to {vendor.get('canonical_name') or vendor['short_name']}.")
     return redirect(url_for("fixer"))
 
 

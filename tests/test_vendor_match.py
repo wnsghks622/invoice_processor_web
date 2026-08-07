@@ -190,6 +190,15 @@ class RecordCarriesVendorId(unittest.TestCase):
         rec = self._record("Athens Services", None)
         self.assertEqual((rec["vendor_id"], rec["vendor_needs_review"]), (None, 1))
 
+    def test_suggest_band_match_sets_vendor_id_and_still_flags_for_review(self):
+        """Carried from Task 9's review: only 'bind' and 'new' were pinned end-to-end through
+        build_invoice_record, but 'suggest' is what drives the Fixer page's pre-selected
+        dropdown (Task 10) - a suggestion that bound itself silently would defeat the queue.
+        'Athen Services' scores 0.9091 against VENDORS[0] ('Athens Services'), inside the
+        suggest band (SUGGEST_THRESHOLD <= score < BIND_THRESHOLD)."""
+        rec = self._record("Athen Services", VENDORS)
+        self.assertEqual((rec["vendor_id"], rec["vendor_needs_review"]), (1, 1))
+
 
 if __name__ == "__main__":
     unittest.main()
