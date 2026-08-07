@@ -34,6 +34,43 @@ def _short_name(canonical: str) -> str:
     return re.sub(r"[^0-9A-Za-z&-]", "", words[0]) if words else "Vendor"
 
 
+def _unique_short_name(canonical: str, used: set) -> str:
+    """_short_name(canonical), disambiguated against short names already taken.
+
+    vendors.short_name is NOT NULL UNIQUE, but _short_name() only looks at one cluster
+    at a time - it has no way to know that, say, 'Black Shadow III', 'Black Jack
+    Market', and 'Black Water Operations' are three different real vendors that all
+    reduce to 'Black'. cluster() correctly keeps them as three separate clusters; this
+    is what stops that correct decision from crashing the insert. `used` is mutated in
+    place so later collisions in the same run see earlier picks.
+    """
+    base = _short_name(canonical)
+    candidate, n = base, 2
+    while candidate.strip().lower() in used:
+        candidate = f"{base}{n}"
+        n += 1
+    used.add(candidate.strip().lower())
+    return candidate
+
+
+def _known_identities(vendors: list[dict]) -> set:
+    """Every string that already identifies some vendor: canonical name, short name, and
+    aliases. A cluster matching any of these is the same vendor under a new spelling, not
+    a new one - checking canonical_name alone missed vendors (like the pre-existing
+    'SoCalGas' row) that were created with a short_name but no canonical_name yet, which
+    would otherwise both duplicate the vendor and crash on the short_name UNIQUE
+    constraint."""
+    known = set()
+    for v in vendors:
+        for field in (v.get("canonical_name"), v.get("short_name")):
+            if field and field.strip():
+                known.add(field.strip().lower())
+        for alias in (v.get("aliases") or "").split(";"):
+            if alias.strip():
+                known.add(alias.strip().lower())
+    return known
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true", help="write vendors (default: dry run)")
@@ -44,7 +81,9 @@ def main() -> int:
     names = [n for n in names if n]
     counts = collections.Counter(names)
     groups = vm.cluster(names)
-    existing = {(v.get("canonical_name") or "").strip().lower() for v in db.all_vendors()}
+    existing_vendors = db.all_vendors()
+    existing = _known_identities(existing_vendors)
+    used_short = {v["short_name"].strip().lower() for v in existing_vendors if v.get("short_name")}
 
     multi = [g for g in groups if len(g) > 1]
     print(f"{len(counts)} distinct raw strings -> {len(groups)} clusters "
@@ -61,7 +100,8 @@ def main() -> int:
             skipped += 1
             continue
         if args.apply:
-            vendor_id = db.add_vendor(_short_name(canonical), "; ".join(group))
+            short = _unique_short_name(canonical, used_short)
+            vendor_id = db.add_vendor(short, "; ".join(group))
             db.update_vendor_identity(vendor_id, canonical_name=canonical)
         created += 1
 
