@@ -117,7 +117,11 @@ that property's pending pool (and the filed PDF moves too).</p>
 </div>
 <p class="muted">Tip: the lasting fix is to add the read location as an
 <a href="{{ url_for('properties_page') }}">alias on that property</a> — then future invoices match on their own.</p>
-{% else %}
+{% endif %}
+
+{# This page hosts three queues. The all-clear has to mean all three are empty - keyed on
+   `reviews` alone it rendered directly underneath a populated date or vendor panel. #}
+{% if not reviews and not undated and not unvendored %}
 <div class="banner">Nothing needs review right now. 🎉</div>
 {% endif %}
 </div>

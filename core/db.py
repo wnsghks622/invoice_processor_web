@@ -418,7 +418,14 @@ def set_entered_in_yardi(invoice_id: int, entered: bool) -> None:
 
 
 def counts() -> dict:
-    """Headline counts for the dashboard."""
+    """Headline counts for the dashboard.
+
+    `needs_review` is the property queue only. The Fixer page hosts three queues, so the
+    other two are counted here as well - they are what the sidebar badge sums, and a queue
+    with no count is a queue nobody sees from any other page. These deliberately mirror the
+    WHERE clauses of unresolved_date_invoices() and vendor_review_invoices(); the row
+    lists themselves are far too heavy to fetch on every page render just to call len().
+    """
     with _connect() as conn:
         c = conn.cursor()
         total = c.execute("SELECT COUNT(*) FROM invoices").fetchone()[0]
@@ -426,13 +433,18 @@ def counts() -> dict:
         dup = c.execute("SELECT COUNT(*) FROM invoices WHERE status='DUPLICATE'").fetchone()[0]
         recon = c.execute("SELECT COUNT(*) FROM invoices WHERE COALESCE(reconciled,'')!=''").fetchone()[0]
         review = c.execute("SELECT COUNT(*) FROM invoices WHERE needs_review=1").fetchone()[0]
+        undated = c.execute(
+            "SELECT COUNT(*) FROM invoices WHERE COALESCE(invoice_date_iso,'')=''").fetchone()[0]
+        unvendored = c.execute(
+            "SELECT COUNT(*) FROM invoices WHERE COALESCE(vendor_needs_review,0)=1").fetchone()[0]
         yardi = c.execute("SELECT COUNT(*) FROM invoices WHERE entered_in_yardi=1 "
                           "AND status!='DUPLICATE'").fetchone()[0]
         pending = c.execute(
             "SELECT COUNT(*) FROM invoices WHERE status!='DUPLICATE' "
             "AND COALESCE(reconciled,'')='' AND COALESCE(stored_file,'')!=''").fetchone()[0]
     return {"total": total, "ok": ok, "duplicate": dup, "reconciled": recon,
-            "needs_review": review, "entered_in_yardi": yardi, "pending": pending}
+            "needs_review": review, "date_review": undated, "vendor_review": unvendored,
+            "entered_in_yardi": yardi, "pending": pending}
 
 
 def pending_by_property() -> dict[str, int]:

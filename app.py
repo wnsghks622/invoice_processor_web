@@ -44,9 +44,17 @@ def _reject_cross_site():
 
 @app.context_processor
 def inject_shell():
-    """The sidebar badge and period pill are part of base.html, so every page needs them."""
+    """The sidebar badge and period pill are part of base.html, so every page needs them.
+
+    The badge links to the Fixer page, which hosts three queues - unmatched property,
+    unreadable date, unconfirmed vendor - so it counts all three. Counting only the
+    property queue made the two newer ones invisible from every page except the Fixer
+    page itself, which is the one page you have to already be on to learn there is work.
+    """
+    counts = db.counts()
     return {
-        "shell_needs_review": db.counts()["needs_review"],
+        "shell_needs_review": (counts["needs_review"] + counts["date_review"]
+                               + counts["vendor_review"]),
         "shell_month": state.load_settings()["month"],
     }
 
@@ -334,6 +342,19 @@ def edit_invoice(invoice_id):
     if "invoice_date" in fields:
         from core import dates
         fields["invoice_date_iso"] = dates.to_iso(fields["invoice_date"])
+
+    # vendor_id is derived from vendor_name exactly as invoice_date_iso is derived from
+    # invoice_date, and vendor_name is editable on this same form - so a corrected name
+    # must not leave the row bound to whichever vendor the *old* name matched, flag clear.
+    # Re-derive through the same pipeline the processor write path uses, so editing a name
+    # and re-reading the invoice land on the same vendor_id. A match below the bind
+    # threshold sets vendor_needs_review, which puts the row on the Fixer page instead of
+    # guessing. Only on an actual change: this form posts vendor_name on every save, and
+    # re-deriving unconditionally would re-open a binding a human already confirmed.
+    if "vendor_name" in fields and fields["vendor_name"] != (inv["vendor_name"] or ""):
+        from core import vendor_match
+        fields.update(vendor_match.record_fields(
+            vendor_match.match(fields["vendor_name"], db.all_vendors())))
 
     # A property change is a reassignment, same as the fixer: move the filed PDF into the new
     # property's folder (out of Needs Review / the old folder) and keep the review flag in
