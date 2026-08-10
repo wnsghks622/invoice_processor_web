@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """Route-level coverage for the Fixer page's review queues: `GET /fixer`'s undated-invoice and
 unvendored-invoice panels, the `POST /fixer/<id>/date` handler (`fixer_set_date`), and the
-`POST /fixer/<id>/vendor` handler (`fixer_set_vendor`, added in Task 10).
+`POST /fixer/<id>/vendor` handler (`fixer_set_vendor`, added in Task 10). Also covers
+`POST /invoices/<id>/edit` (`edit_invoice`), the Invoices page's own editor, which recomputes
+the same two derived fields (`invoice_date_iso`, `vendor_id`) through a different route.
 
 Why this file exists: `fixer_set_date` has four branches (empty-reject, unparseable-reject,
 missing-invoice-reject, validate-then-write), and the ordering between validation and the
@@ -14,6 +16,13 @@ route quietly started writing bad data, or writing before validating.
 reject-nonexistent-invoice, reject-nonexistent-vendor, and only then two writes (an alias-list
 update that is itself conditional/deduped, then the unconditional vendor bind) - so it gets the
 same treatment here rather than the "no unit test" call the original Task 5 draft made.
+
+`edit_invoice` (`EditInvoiceRoute`, added in the post-review fix wave) earns its place here for
+a sharper reason than "no coverage yet": a mutation that deleted its `invoice_date_iso`
+recompute previously left the full suite green, because nothing exercised the route at all.
+It pins two derive-on-write invariants (date and vendor) plus one deliberate non-invariant -
+vendor_id is re-derived only when vendor_name actually changes, so resubmitting the edit form
+unchanged can never silently re-open a binding a human already confirmed.
 
 Database approach
 ------------------
@@ -393,6 +402,120 @@ class FixerSetVendorRoute(unittest.TestCase):
         row = db.get_invoice(1)
         self.assertEqual(row["vendor_id"], 1)                   # sanity: the confirm happened
         self.assertEqual(row["stored_file"], "Athens_06_2026.pdf")
+
+
+class EditInvoiceRoute(unittest.TestCase):
+    """POST /invoices/<id>/edit (edit_invoice): the two derived-field invariants the route
+    is responsible for keeping in sync with their editable source field - invoice_date_iso
+    must follow invoice_date, and vendor_id must follow vendor_name - plus the deliberate
+    exception that vendor_id is re-derived only when vendor_name actually *changes*, so a
+    human-confirmed binding is never silently re-opened by re-saving the same form.
+
+    export_amount_sidecars() is patched to a no-op for every test in this class. edit_invoice
+    calls it unconditionally after every save, and it globs config.PROCESSED (a real directory
+    on disk, per core/db.py) even when no row ends up written - a checkout where that directory
+    holds real sidecar files would have them rewritten as a side effect of running this suite.
+    None of the invariants pinned here depend on it running at all.
+    """
+
+    def setUp(self):
+        _conn.execute("DELETE FROM invoices")
+        _conn.execute("DELETE FROM vendors")
+        _conn.commit()
+        self.client = app.app.test_client()
+        sidecar_patcher = mock.patch.object(db, "export_amount_sidecars")
+        sidecar_patcher.start()
+        self.addCleanup(sidecar_patcher.stop)
+
+    def _insert_invoice(self, invoice_id, vendor_name="Test Vendor", vendor_id=None,
+                        vendor_needs_review=0, invoice_date="06/01/2026",
+                        invoice_date_iso="2026-06-01", property_="Test Property"):
+        _conn.execute(
+            "INSERT INTO invoices (id, vendor_name, vendor_id, vendor_needs_review, "
+            "property, invoice_date, invoice_date_iso) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (invoice_id, vendor_name, vendor_id, vendor_needs_review, property_,
+             invoice_date, invoice_date_iso),
+        )
+        _conn.commit()
+
+    def _insert_vendor(self, vendor_id, short_name, canonical_name="", aliases=""):
+        _conn.execute(
+            "INSERT INTO vendors (id, short_name, canonical_name, aliases) VALUES (?, ?, ?, ?)",
+            (vendor_id, short_name, canonical_name, aliases),
+        )
+        _conn.commit()
+
+    def test_editing_to_a_parseable_date_updates_invoice_date_iso(self):
+        self._insert_invoice(1, invoice_date="05/01/2026", invoice_date_iso="2026-05-01")
+
+        resp = self.client.post("/invoices/1/edit", data={"invoice_date": "06/15/2026"})
+        self.assertEqual(resp.status_code, 302)
+
+        row = db.get_invoice(1)
+        self.assertEqual(row["invoice_date"], "06/15/2026")
+        self.assertEqual(row["invoice_date_iso"], "2026-06-15")
+
+    def test_editing_to_unparseable_text_clears_iso_and_requeues_the_row(self):
+        self._insert_invoice(1, invoice_date="06/01/2026", invoice_date_iso="2026-06-01")
+
+        resp = self.client.post("/invoices/1/edit", data={"invoice_date": "banana"})
+        self.assertEqual(resp.status_code, 302)
+
+        row = db.get_invoice(1)
+        self.assertEqual(row["invoice_date"], "banana")
+        self.assertEqual(row["invoice_date_iso"], "")
+        self.assertIn(1, [r["id"] for r in db.unresolved_date_invoices()])
+
+    def test_editing_vendor_name_to_a_different_known_vendor_rederives_vendor_id(self):
+        self._insert_vendor(1, "Athens", canonical_name="Athens Services")
+        self._insert_vendor(2, "Beta", canonical_name="Beta Electric Co")
+        self._insert_invoice(1, vendor_name="Athens Services", vendor_id=1,
+                             vendor_needs_review=0)
+
+        # Exact canonical-name match against vendor 2 - binds at score 1.0, no ambiguity.
+        resp = self.client.post("/invoices/1/edit", data={"vendor_name": "Beta Electric Co"})
+        self.assertEqual(resp.status_code, 302)
+
+        row = db.get_invoice(1)
+        self.assertEqual(row["vendor_name"], "Beta Electric Co")
+        self.assertEqual(row["vendor_id"], 2)
+        self.assertEqual(row["vendor_needs_review"], 0)
+
+    def test_editing_vendor_name_to_something_unmatchable_flags_for_review(self):
+        self._insert_vendor(1, "Athens", canonical_name="Athens Services")
+        self._insert_invoice(1, vendor_name="Athens Services", vendor_id=1,
+                             vendor_needs_review=0)
+
+        # Verified against vendor_match.match directly: scores 0.30 against this vendor
+        # list, well under SUGGEST_THRESHOLD - an unambiguous "new".
+        resp = self.client.post(
+            "/invoices/1/edit", data={"vendor_name": "Zzxqvorp Unrelated Holdings"})
+        self.assertEqual(resp.status_code, 302)
+
+        row = db.get_invoice(1)
+        self.assertEqual(row["vendor_needs_review"], 1)
+        self.assertIn(1, [r["id"] for r in db.vendor_review_invoices()])
+
+    def test_unchanged_vendor_name_does_not_disturb_an_existing_binding(self):
+        self._insert_vendor(1, "Athens", canonical_name="Athens Services",
+                            aliases="Athens Svcs")
+        self._insert_vendor(2, "Beta", canonical_name="Beta Electric Co")
+        # vendor_id deliberately points at vendor 2, NOT the vendor "Athens Svcs" would
+        # itself match (vendor 1, via an exact alias hit - confirmed directly against
+        # vendor_match.match). If the route ever re-derived on a no-op resubmit, this row
+        # would flip to vendor_id 1; the whole point of the change-guard is that it must not.
+        self._insert_invoice(1, vendor_name="Athens Svcs", vendor_id=2,
+                             vendor_needs_review=0)
+
+        resp = self.client.post(
+            "/invoices/1/edit",
+            data={"vendor_name": "Athens Svcs", "invoice_number": "A-999"})
+        self.assertEqual(resp.status_code, 302)
+
+        row = db.get_invoice(1)
+        self.assertEqual(row["invoice_number"], "A-999")   # sanity: the edit did apply
+        self.assertEqual(row["vendor_id"], 2)
+        self.assertEqual(row["vendor_needs_review"], 0)
 
 
 if __name__ == "__main__":
