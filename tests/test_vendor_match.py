@@ -261,6 +261,21 @@ class RecordCarriesVendorId(unittest.TestCase):
         rec = self._record("Athen Services", VENDORS)
         self.assertEqual((rec["vendor_id"], rec["vendor_needs_review"]), (1, 1))
 
+    def test_record_has_exactly_the_expected_fields(self):
+        """Pin the builder's complete key set, not just a handful of values checked above.
+        db.insert_invoice filters `rec` down to db.INVOICE_COLUMNS rather than erroring on
+        an unknown one - so a field silently dropped (or renamed) from build_invoice_record's
+        return dict would never be written to the database, and no test that only checks
+        individual values (like the ones above) would ever notice. A caught-earlier real
+        example: a mutation that deleted the "description" key left the full suite green."""
+        rec = self._record("Athens Services", VENDORS)
+        self.assertEqual(set(rec.keys()), {
+            "status", "vendor_name", "vendor_id", "vendor_needs_review", "invoice_number",
+            "unit", "invoice_date", "invoice_date_iso", "due_date", "amount", "amount_text",
+            "description", "line_items", "property", "source_file", "date_processed",
+            "entered_in_yardi", "stored_file", "needs_review", "origin",
+        })
+
 
 if __name__ == "__main__":
     unittest.main()
