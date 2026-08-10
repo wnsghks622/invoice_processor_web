@@ -121,6 +121,41 @@ database already has invoices — use `--force` to wipe and re-import.
 
 ---
 
+## Backfilling dates and vendors
+
+`invoice_date_iso` and `vendor_id` are only populated when an invoice is *written* — an existing
+database doesn't get either one retroactively just because you pulled this update. If you're
+bringing an existing `data/invoices.db` onto this version, catch it up with three scripts, run in
+this order:
+
+```bash
+python scripts/backfill_dates.py
+python scripts/bootstrap_vendors.py
+python scripts/backfill_vendors.py
+```
+
+1. **`backfill_dates.py`** parses `invoice_date` into `invoice_date_iso` for every row that
+   doesn't already have one. Anything it can't parse is queued for review instead of being
+   silently left out of monthly totals.
+2. **`bootstrap_vendors.py`** builds the vendor list from the raw vendor names already sitting in
+   the invoice table, grouping spellings that are probably the same vendor. **Read what it prints
+   for every multi-member cluster before applying.** It's deliberately conservative, but a wrong
+   merge tangles two real vendors' invoice history together — cheap to catch by reading the
+   cluster now, expensive to unpick later once more invoices have piled up bound to the wrong
+   vendor.
+3. **`backfill_vendors.py`** matches every invoice's raw vendor name against the vendor list
+   `bootstrap_vendors.py` just created, and binds `vendor_id` on confident matches. Anything less
+   confident is queued for review instead of guessed at. Run it after `bootstrap_vendors.py` —
+   without a vendor list there's nothing to match against, and every invoice ends up queued.
+
+All three are **dry run by default**: they print what they would do and change nothing until you
+add `--apply`. All three are also **idempotent** — safe to re-run any time, because each one only
+acts on rows (or clusters) it hasn't already resolved. That's also what makes them worth re-running
+later, e.g. run `backfill_vendors.py --apply` again after adding a vendor by hand, to pick up any
+invoices that can now match it.
+
+---
+
 ## Daily use
 
 **Process invoices** — drag PDFs or images onto the drop zone, click **Run processor**. Each file is
@@ -130,8 +165,15 @@ read by Claude, filed into `data/processed/<property>/`, and logged. Output stre
 Tick **Yardi** as you key each one in (saves instantly). Click a vendor name to open its PDF. The
 edit panel fixes any field; changing the property moves the filed PDF too.
 
-**Needs Review** — invoices whose service location didn't match any property. Click the vendor to
-read the PDF, then assign the right property. The lasting fix is adding that address as an alias.
+**Needs Review** — one page, three separate queues, each flagging a different problem:
+- **Property didn't match** — the service location didn't match any property. Click the vendor to
+  read the PDF, then assign the right property. The lasting fix is adding that address as an alias.
+- **Date couldn't be read** — the printed date didn't parse. Pick the correct date right there;
+  until you do, the invoice is held out of monthly totals rather than silently dropped, because a
+  dropped invoice looks identical to a vendor who skipped a month.
+- **Vendor needs confirming** — the vendor name didn't confidently match a known vendor. Confirm
+  the suggestion (or pick the right one) and that spelling is added to the vendor's aliases, so
+  it's never asked about again.
 
 **Month-end close** — four steps:
 1. **Stage** — copies each property's outstanding invoices into `data/Bank Rec/<Month> Bank Rec/<property>/`
@@ -172,8 +214,10 @@ folder across before first launch.
 python -m unittest discover -s tests -t .
 ```
 
-26 tests covering amount parsing, duplicate detection, invoice merging, property matching, the
-bank-statement and rec-report parsers, and the subset-sum matcher. No database or network needed.
+125 tests covering amount parsing, duplicate detection, invoice merging, property matching, the
+bank-statement and rec-report parsers, and the subset-sum matcher, plus date parsing, vendor
+identity matching and clustering, the schema migration, and the Needs Review page's routes.
+No database or network needed.
 
 ---
 
