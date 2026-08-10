@@ -1861,7 +1861,7 @@ git commit -m "feat: add confidence-gated missing eligibility"
 
 ---
 
-## Task 10: The Month page
+## Task 10: The Month page and its row actions
 
 **Files:**
 - Create: `templates/month.html`
@@ -1918,6 +1918,8 @@ class MonthPage(unittest.TestCase):
         self.client.post("/month/open", data={"period": "August 2026"})
         self.assertEqual(len(ledger.instances_for_period("August 2026")), 1)
 
+
+
     def test_a_bad_period_is_rejected_rather_than_crashing(self):
         resp = self.client.get("/month?period=not-a-month", follow_redirects=True)
         self.assertEqual(resp.status_code, 200)
@@ -1941,6 +1943,47 @@ class MonthPage(unittest.TestCase):
         self.assertEqual(len(ledger.instances_for_period("August 2026")), 1)
 ```
 
+```python
+class InstanceActions(unittest.TestCase):
+    def setUp(self):
+        _conn.execute("DELETE FROM obligation_instance")
+        _conn.execute("DELETE FROM obligation")
+        self.client = app.app.test_client()
+        from core import ledger
+        ledger.add_obligation(kind="ACTION", title="Call Michelle",
+                              window_rule="day:12", cadence="monthly")
+        ledger.open_period("August 2026")
+        self.inst = ledger.instances_for_period("August 2026")[0]
+
+    def test_done_marks_the_instance_and_stamps_the_date(self):
+        from core import ledger
+        self.client.post(f"/month/instance/{self.inst['id']}/done")
+        after = ledger.instances_for_period("August 2026")[0]
+        self.assertEqual(after["state"], "done")
+        self.assertTrue(after["done_at"])
+
+    def test_skip_records_the_reason(self):
+        from core import ledger
+        self.client.post(f"/month/instance/{self.inst['id']}/skip",
+                         data={"note": "LADWP skips odd months"})
+        after = ledger.instances_for_period("August 2026")[0]
+        self.assertEqual(after["state"], "skipped")
+        self.assertEqual(after["note"], "LADWP skips odd months")
+
+    def test_skip_without_a_reason_is_rejected_and_writes_nothing(self):
+        # A dismissal with no reason is indistinguishable from a mis-click six months later.
+        from core import ledger
+        self.client.post(f"/month/instance/{self.inst['id']}/skip", data={"note": "  "})
+        after = ledger.instances_for_period("August 2026")[0]
+        self.assertEqual(after["state"], "open")
+
+    def test_acting_on_a_missing_instance_is_rejected_and_writes_nothing(self):
+        from core import ledger
+        resp = self.client.post("/month/instance/9999/done")
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(len(ledger.instances_for_period("August 2026")), 1)
+```
+
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `python -m unittest tests.test_app -v`
@@ -1956,8 +1999,16 @@ def month_page():
     """Everything due in one period, grouped by property.
 
     Reads a period from the query string so you can look back at a closed month; falls back
-    to the configured period. Satisfaction runs on every render, so an invoice processed
-    since you last looked shows as arrived without you having to do anything.
+    to the configured period.
+
+    Satisfaction runs on every render, so an invoice processed since you last looked shows
+    as arrived without you having to press anything. That does mean a GET writes, which is
+    normally worth avoiding - it is a deliberate call here. The app is single-user on
+    127.0.0.1, _reject_cross_site already refuses requests that did not come from its own
+    pages, and satisfy_period is idempotent, so a repeated or prefetched request changes
+    nothing. The alternative - only syncing on an explicit button - leaves the page showing
+    an invoice as missing hours after it was processed, which is the kind of stale screen
+    that stops being trusted.
     """
     from core import expectations, ledger, periods
     settings = state.load_settings()
@@ -2020,7 +2071,7 @@ def month_open():
 
 Add `import datetime` to `app.py`'s imports if it is not already there.
 
-- [ ] **Step 4: Add the template**
+- [ ] **Step 4: Add the template and the row-action handlers**
 
 Create `templates/month.html`:
 
@@ -2096,6 +2147,10 @@ Create `templates/month.html`:
           <form method="post" action="{{ url_for('instance_done', instance_id=r.id) }}">
             <button class="btn" type="submit">Done</button>
           </form>
+          <form method="post" action="{{ url_for('instance_skip', instance_id=r.id) }}">
+            <input type="text" name="note" placeholder="why?" required>
+            <button class="btn" type="submit">Skip</button>
+          </form>
           {% endif %}
         </td>
       </tr>
@@ -2109,110 +2164,8 @@ Create `templates/month.html`:
 {% endblock %}
 ```
 
-> The `Done` form posts to `instance_done`, which Task 11 adds. Until then this template will raise a `BuildError` — that is why Task 11 immediately follows and why the Task 10 tests do not exercise that button.
-
-For now, so the page renders, add a stub route in `app.py` directly beneath `month_open`:
-
-```python
-@app.route("/month/instance/<int:instance_id>/done", methods=["POST"])
-def instance_done(instance_id):
-    """Filled in by the next task; the Month template links to it."""
-    from core import ledger
-    ledger.set_instance_state(instance_id, "done")
-    return redirect(request.referrer or url_for("month_page"))
-```
-
-- [ ] **Step 5: Add the nav item**
-
-In `templates/base.html`, after the Invoices `<a class="nav-item" ...>` block and before Month-end, add:
-
-```html
-      <a class="nav-item{{ ' active' if request.endpoint in ('month_page',) }}" href="{{ url_for('month_page') }}">
-        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="14" height="12" rx="1.6"/><line x1="3" y1="8" x2="17" y2="8"/><line x1="7" y1="2.5" x2="7" y2="5.5"/><line x1="13" y1="2.5" x2="13" y2="5.5"/><circle cx="7" cy="12" r="1" fill="currentColor" stroke="none"/></svg>
-        <span class="nav-label">Month</span>
-      </a>
-```
-
-- [ ] **Step 6: Run tests to verify they pass**
-
-Run: `python -m unittest tests.test_app -v`
-Expected: PASS
-
-Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 231 tests
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add app.py templates/month.html templates/base.html tests/test_app.py
-git commit -m "feat: add the Month page"
-```
-
----
-
-## Task 11: Row actions
-
-**Files:**
-- Modify: `app.py`, `templates/month.html`
-- Test: `tests/test_app.py` (extend)
-
-**Interfaces:**
-- Consumes: `ledger.set_instance_state` (Task 4).
-- Produces: routes `POST /month/instance/<id>/done` (replacing Task 10's stub) and `POST /month/instance/<id>/skip`.
-
-- [ ] **Step 1: Write the failing test**
-
-Append to `tests/test_app.py`:
-
-```python
-class InstanceActions(unittest.TestCase):
-    def setUp(self):
-        _conn.execute("DELETE FROM obligation_instance")
-        _conn.execute("DELETE FROM obligation")
-        self.client = app.app.test_client()
-        from core import ledger
-        ledger.add_obligation(kind="ACTION", title="Call Michelle",
-                              window_rule="day:12", cadence="monthly")
-        ledger.open_period("August 2026")
-        self.inst = ledger.instances_for_period("August 2026")[0]
-
-    def test_done_marks_the_instance_and_stamps_the_date(self):
-        from core import ledger
-        self.client.post(f"/month/instance/{self.inst['id']}/done")
-        after = ledger.instances_for_period("August 2026")[0]
-        self.assertEqual(after["state"], "done")
-        self.assertTrue(after["done_at"])
-
-    def test_skip_records_the_reason(self):
-        from core import ledger
-        self.client.post(f"/month/instance/{self.inst['id']}/skip",
-                         data={"note": "LADWP skips odd months"})
-        after = ledger.instances_for_period("August 2026")[0]
-        self.assertEqual(after["state"], "skipped")
-        self.assertEqual(after["note"], "LADWP skips odd months")
-
-    def test_skip_without_a_reason_is_rejected_and_writes_nothing(self):
-        # A dismissal with no reason is indistinguishable from a mis-click six months later.
-        from core import ledger
-        self.client.post(f"/month/instance/{self.inst['id']}/skip", data={"note": "  "})
-        after = ledger.instances_for_period("August 2026")[0]
-        self.assertEqual(after["state"], "open")
-
-    def test_acting_on_a_missing_instance_is_rejected_and_writes_nothing(self):
-        from core import ledger
-        resp = self.client.post("/month/instance/9999/done")
-        self.assertEqual(resp.status_code, 302)
-        self.assertEqual(len(ledger.instances_for_period("August 2026")), 1)
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `python -m unittest tests.test_app -v`
-Expected: FAIL — `test_skip_records_the_reason` gets a 404, and `test_skip_without_a_reason_is_rejected_and_writes_nothing` fails because the stub has no guard.
-
-- [ ] **Step 3: Replace the stub with both handlers**
-
-In `app.py`, replace the `instance_done` stub added in Task 10 with:
+Then both row-action handlers the template links to, so the task commits nothing
+provisional:
 
 ```python
 def _instance_or_redirect(instance_id):
@@ -2258,39 +2211,35 @@ def instance_skip(instance_id):
     return redirect(request.referrer or url_for("month_page"))
 ```
 
-- [ ] **Step 4: Add the skip control to the template**
+- [ ] **Step 5: Add the nav item**
 
-In `templates/month.html`, replace the final `<td>` of the row loop with:
+In `templates/base.html`, after the Invoices `<a class="nav-item" ...>` block and before Month-end, add:
 
 ```html
-        <td>
-          {% if r.state == 'open' %}
-          <form method="post" action="{{ url_for('instance_done', instance_id=r.id) }}">
-            <button class="btn" type="submit">Done</button>
-          </form>
-          <form method="post" action="{{ url_for('instance_skip', instance_id=r.id) }}">
-            <input type="text" name="note" placeholder="why?" required>
-            <button class="btn" type="submit">Skip</button>
-          </form>
-          {% endif %}
-        </td>
+      <a class="nav-item{{ ' active' if request.endpoint in ('month_page',) }}" href="{{ url_for('month_page') }}">
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="14" height="12" rx="1.6"/><line x1="3" y1="8" x2="17" y2="8"/><line x1="7" y1="2.5" x2="7" y2="5.5"/><line x1="13" y1="2.5" x2="13" y2="5.5"/><circle cx="7" cy="12" r="1" fill="currentColor" stroke="none"/></svg>
+        <span class="nav-label">Month</span>
+      </a>
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [ ] **Step 6: Run tests to verify they pass**
+
+Run: `python -m unittest tests.test_app -v`
+Expected: PASS
 
 Run: `python -m unittest discover -s tests -t .`
 Expected: PASS, 235 tests
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add app.py templates/month.html tests/test_app.py
-git commit -m "feat: add done and skip actions to month rows"
+git add app.py templates/month.html templates/base.html tests/test_app.py
+git commit -m "feat: add the Month page with row actions"
 ```
 
 ---
 
-## Task 12: Adding reminders
+## Task 11: Adding reminders
 
 **Files:**
 - Modify: `app.py`, `templates/month.html`
@@ -2477,7 +2426,7 @@ git commit -m "feat: add reminders, one-off and recurring"
 
 ---
 
-## Task 13: Cadence editing, on-demand, and the promotion choice
+## Task 12: Cadence editing, on-demand, and the promotion choice
 
 **Files:**
 - Modify: `app.py`, `templates/month.html`
@@ -2655,7 +2604,7 @@ git commit -m "feat: edit cadence, mark vendors on-demand, confirm promotions"
 
 ---
 
-## Task 14: Show the parsed date on the invoices list
+## Task 13: Show the parsed date on the invoices list
 
 **Files:**
 - Modify: `templates/invoices.html:116`
