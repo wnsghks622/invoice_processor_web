@@ -20,6 +20,18 @@ from typing import NamedTuple, Optional
 BIND_THRESHOLD = 0.92
 SUGGEST_THRESHOLD = 0.80
 
+# Shortest normalized alias the alias-inside tier (tier 2) will search for inside a longer
+# raw string. processor.match_property - the function this pipeline is modelled on - uses
+# the same floor of 5 on both sides of its own substring tier, and tier 2 needs it for the
+# same reason: "these few characters appear somewhere in the raw text" is not evidence of
+# identity at short lengths, and tier 2 binds at confidence 1.0 with no human review.
+# Four bootstrapped vendors already normalize below it ('gas', 'dwp', 'home', 'at t'), and
+# without the floor they swallow any unrelated name that happens to contain those letters:
+# 'Home Depot' -> HOME SERVICE, 'Great Tile Co' -> AT&T (gre[at t]ile), 'Gasparian
+# Plumbing' -> SoCalGas. Below the floor an alias simply stops being a tier-2 candidate;
+# it still identifies its vendor through the exact and close-spelling tiers.
+MIN_ALIAS_INSIDE_LEN = 5
+
 # Corporate suffixes and filler that carry no identifying information.
 _NOISE = re.compile(
     r"\b(inc|llc|ltd|lp|corp|corporation|company|co|the|of|and|dba|"
@@ -81,14 +93,21 @@ def _aliases_of(vendor: dict) -> list[str]:
 
 def _substring_candidates(vendor: dict) -> list[str]:
     """Identifying strings it is safe to search for *inside* a longer raw string:
-    canonical name and curated aliases only.
+    canonical name and aliases.
 
     short_name is deliberately excluded here. It is often a single generic word (a
     vendor's short_name is frequently just its first word, e.g. "Mitsubishi" for
     "Mitsubishi Electric US, Inc."), and "this word appears somewhere in the raw text"
     is too loose a bar to bind at 100% confidence with no human review - it would also
-    fire for an unrelated "Mitsubishi Motors" invoice. The full canonical name or an
-    explicitly curated alias is a much more specific signal.
+    fire for an unrelated "Mitsubishi Motors" invoice. The full canonical name or a
+    whole alias is a much more specific signal.
+
+    The alias list is NOT a purely curated one, so it cannot carry that argument on its
+    own. Two paths append to it automatically: bootstrap_vendors.py seeds every raw
+    spelling in a cluster as an alias, and app.py's vendor confirmation appends the raw
+    model-extracted string whenever a human confirms a match. Both can therefore put a
+    short or generic string in this list - which is why length, not provenance, is what
+    the caller gates on (MIN_ALIAS_INSIDE_LEN in match()'s tier 2).
     """
     raw = [vendor.get("canonical_name")]
     raw += (vendor.get("aliases") or "").split(";")
@@ -124,11 +143,17 @@ def match(raw: Optional[str], vendors: list[dict]) -> MatchResult:
     #    normalized form matches the *whole* key there is no such leftover - that is a
     #    close spelling (tier 3), not an alias embedded in a longer name. Longest alias
     #    wins as most specific.
+    #
+    #    The alias must also clear MIN_ALIAS_INSIDE_LEN: a three-letter fragment found
+    #    somewhere in a longer name is coincidence, not identity. Only the alias side
+    #    needs the explicit floor - len(akey) < len(key) already puts the raw key above
+    #    it, which is the same pair of bounds match_property() spells out separately.
     best_id, best_len = None, 0
     for v in vendors:
         for alias in _substring_candidates(v):
             akey = normalize(alias)
-            if akey and len(akey) < len(key) and akey in key and len(akey) > best_len:
+            if (len(akey) >= MIN_ALIAS_INSIDE_LEN and len(akey) < len(key)
+                    and akey in key and len(akey) > best_len):
                 best_id, best_len = v["id"], len(akey)
     if best_id is not None:
         return MatchResult("bind", best_id, 1.0, "alias-inside")

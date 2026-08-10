@@ -69,6 +69,68 @@ class MatchTiers(unittest.TestCase):
         self.assertEqual(vm.match("Athens Services", []).outcome, "new")
 
 
+class AliasInsideMinimumLength(unittest.TestCase):
+    """Tier 2 binds at confidence 1.0 with no human review, so the fragment it searches
+    for has to be long enough to actually be evidence of identity.
+
+    Four vendors bootstrapped from the live invoice history normalize to under five
+    characters - 'gas' (SoCalGas's alias 'The Gas Company'), 'dwp', 'home', 'at t'. The
+    whole-branch review reproduced all of the binds below against the real 86-vendor
+    list, every one of them at score 1.0 with vendor_needs_review left at 0, i.e. wrong
+    and invisible. processor.match_property already requires len(key) >= 5 on its own
+    substring tier; this is the same floor.
+    """
+
+    SHORT_ALIAS_VENDORS = [
+        # Exactly the four short-normalizing shapes bootstrap_vendors.py produced.
+        {"id": 5,  "canonical_name": "SoCalGas", "short_name": "SoCalGas",
+         "aliases": "The Gas Company"},                    # normalizes to 'gas'
+        {"id": 11, "canonical_name": "AT&T", "short_name": "AT&T",
+         "aliases": "AT&T"},                               # normalizes to 'at t'
+        {"id": 68, "canonical_name": "HOME SERVICE", "short_name": "HOME",
+         "aliases": ""},                                   # normalizes to 'home'
+    ]
+
+    def test_short_alias_does_not_swallow_an_unrelated_name(self):
+        # 'Home Depot' contains 'home'; without the floor this bound to HOME SERVICE.
+        r = vm.match("Home Depot", self.SHORT_ALIAS_VENDORS)
+        self.assertNotEqual(r.reason, "alias-inside")
+        self.assertNotEqual(r.vendor_id, 68)
+        self.assertEqual(r.outcome, "new")
+
+    def test_short_alias_does_not_match_across_a_word_boundary(self):
+        # 'gre[at t]ile' contains 'at t' only because normalize() strips punctuation.
+        # This is the most alarming of the reproductions: nothing about the two names
+        # is related at all.
+        r = vm.match("Great Tile Co", self.SHORT_ALIAS_VENDORS)
+        self.assertNotEqual(r.reason, "alias-inside")
+        self.assertNotEqual(r.vendor_id, 11)
+        self.assertEqual(r.outcome, "new")
+
+    def test_short_alias_does_not_match_a_substring_of_a_longer_word(self):
+        # '[gas]parian' - 'gas' inside an unrelated surname.
+        r = vm.match("Gasparian Plumbing", self.SHORT_ALIAS_VENDORS)
+        self.assertNotEqual(r.reason, "alias-inside")
+        self.assertNotEqual(r.vendor_id, 5)
+        self.assertEqual(r.outcome, "new")
+
+    def test_the_floor_does_not_disable_the_tier(self):
+        # The guard must be a floor, not an off switch. 'LADWP' normalizes to exactly
+        # five characters, so it sits on the boundary and must still bind - this is the
+        # same case MatchTiers.test_alias_inside_extracted_name_binds covers, asserted
+        # here at the boundary itself.
+        self.assertEqual(len(vm.normalize("LADWP")), vm.MIN_ALIAS_INSIDE_LEN)
+        r = vm.match("LADWP - Water and Power Billing Dept", VENDORS)
+        self.assertEqual((r.outcome, r.vendor_id, r.reason), ("bind", 2, "alias-inside"))
+
+    def test_a_short_alias_still_identifies_its_own_vendor_exactly(self):
+        # The floor removes an alias from the *substring* tier only. Asked about that
+        # exact spelling, tier 1 must still bind it - otherwise the guard would have
+        # made these four vendors unmatchable rather than merely un-greedy.
+        r = vm.match("The Gas Company", self.SHORT_ALIAS_VENDORS)
+        self.assertEqual((r.outcome, r.vendor_id, r.reason), ("bind", 5, "exact"))
+
+
 class MatchThresholds(unittest.TestCase):
     """The band boundaries are load-bearing: below BIND a human must confirm."""
 
