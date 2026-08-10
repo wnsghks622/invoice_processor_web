@@ -44,6 +44,20 @@ That contrast is what makes this feasible. Vendor billing dates are regular enou
 predict; the dates you process them on are not. Every timing decision here reads
 `invoice_date_iso` and nothing reads `date_processed`.
 
+Billing frequency, measured the same way on 2026-08-10 — 51 pairs recur across ≥2 distinct
+months, and the history reaches back to 2025-10 for some of them:
+
+```
+39  bill every month
+ 6  have a 2-month gap somewhere
+ 4  have a 3-month gap somewhere
+ 2  have a longer gap (5 and 8 months)
+```
+
+Eight pairs meet the classification threshold in §6.4.1 today. Of those, three are cleanly
+monthly, one is cleanly quarterly, and **four changed frequency mid-history** — which is why
+cadence is decided on recent observations rather than the whole record (§6.1).
+
 **Note on database state:** the three post-merge scripts (`backfill_dates.py`,
 `bootstrap_vendors.py`, `backfill_vendors.py`) have **not** yet been run against the live
 database. Until they are, it holds 3 vendors and no populated `invoice_date_iso` or
@@ -167,12 +181,41 @@ per parent spec §5.3:
 | `confidence` | **high**: n ≥ 3 and spread ≤ 3 · **medium**: n ≥ 3, spread ≤ 10 · **low**: otherwise |
 | `cadence` | `monthly` or `irregular` only — see below and §6.4 |
 
-**`monthly` versus `irregular`** is decided by gaps, not by count: a pair is `monthly` when
-no two consecutive observations are more than one month apart, and `irregular` otherwise.
-So a vendor billing June and July is `monthly`; one billing March and July is `irregular`
-even though both have two observations. `irregular` is the honest answer for "recurs, but
-not on a schedule I can predict" — it still generates an instance, but only surfaces in the
-last week (§6.4), because flagging it on a guessed date would be noise.
+**Cadence is decided by the gaps between observations, and only recent ones count.**
+
+Take the gaps between consecutive observations, in months. Classify on the **most recent
+four gaps** (or all of them, if there are fewer):
+
+| Recent gaps | Cadence |
+|---|---|
+| all 1 | `monthly` |
+| all 2 | `even-months` or `odd-months`, by parity of the observed months |
+| all 3 | `quarterly` |
+| mixed | `irregular` |
+
+Older observations still count toward `confidence` and toward `due_day` / `due_spread`.
+They just do not decide the cadence.
+
+The recent window is not a refinement, it is the main case. Measured across the live
+history (§2), four of the eight pairs that qualify for classification changed frequency
+mid-history, all but one toward monthly:
+
+```
+amtech elevator      gaps 3,3,3      clean quarterly
+rolling greens       gaps 3,2,1,1    quarterly -> bi-monthly -> monthly
+mitsubishi electric  gaps 2,2,1,1    bi-monthly -> monthly
+iktelecom            gaps 5,1,1      sporadic  -> monthly
+cost sign            gaps 2,1,1      bi-monthly -> monthly
+```
+
+Classifying `rolling greens` over its whole history gives `irregular`, which under §6.4
+surfaces only in the last week — but it has billed monthly since May, and a missing utility
+bill found in the last week of the month is found late. On its recent gaps it reads
+`monthly` and flags on time. The rule self-corrects when a vendor shifts again, which is the
+behaviour the data actually calls for.
+
+`irregular` remains the honest answer for genuinely erratic billing. It still generates an
+instance, but surfaces only in the last week, because flagging it on a guessed date is noise.
 
 Learning never assigns `on-demand`. That classification only ever comes from you (§6.5) or
 from the promotion choice (§6.6) — the system cannot tell a plumber who happened to bill
@@ -229,13 +272,37 @@ Expected page labelled *"on-demand — billed when work is done"*. A muted row l
 something fell through; an on-demand row looks like a decision. Same silence, different
 meaning to a reader six months later.
 
-**Even/odd and quarterly are defined but never assigned by learning**, until a pair has
-**≥4 observations spanning ≥4 distinct months**. The live history has two complete months,
-June (even) and July (odd), so a pair seen only in June is indistinguishable from
-even-months, quarterly and one-off. The detector is built and correct; it does not fire on
-this data yet. Parent spec §10 records that LADWP genuinely bills Lisa Ahn and Sunggwang on
-even months and Monette on odd — those will come from the Autopay Sweep import, not from
-learning.
+### 6.4.1 Non-monthly cadences
+
+**Learning assigns these only when a pair has ≥4 observations spanning ≥4 distinct months.**
+Below that threshold there is not enough signal: a pair seen in June and August is equally
+consistent with even-months, quarterly, and two unrelated jobs.
+
+The gate **does** fire on the current history, and correctly. `amtech elevator` at
+6281-6301 Beach Blvd has billed 2025-10, 2026-01, 2026-04, 2026-07 — four observations,
+gaps of exactly 3, spanning ten months — and classifies as `quarterly`. Eight pairs meet the
+threshold today (§2).
+
+**Anchoring.** `every 2 months` and `every 3 months` are not enough on their own; the system
+must know *which* months. The anchor is derived from the observations, never assumed from the
+calendar:
+
+- `even-months` / `odd-months` — parity of the observed months. LADWP at 1707 Alexandria
+  bills in February, April, June: even.
+- `quarterly` — the observed month modulo 3. `amtech` bills in months 10, 1, 4, 7, all
+  ≡ 1 (mod 3), so its instances fall in January, April, July, October. A vendor billing
+  February, May, August, November anchors differently and must not be forced onto calendar
+  quarters.
+
+A period that does not match the anchor generates **no instance at all**, so an off-cycle
+month cannot show the obligation as missing.
+
+**You can set any of these by hand at any time**, regardless of the gate — §6.5. Manual
+assignment sets `source='manual'` and pins it, so recompute will not revert it. This is the
+expected path for LADWP: parent spec §10 records that it bills Lisa Ahn and Sunggwang on even
+months and Monette on odd, and the SOP states it outright. You know the answer; the system
+does not have to infer it. When the Autopay Sweep import lands (parent spec §8) those become
+`source='authoritative'` and stop needing manual entry.
 
 ### 6.5 Editing
 
@@ -359,8 +426,19 @@ filesystem writes).
   a `date:` outside the period, and months where "week 3" and "the 15th–21st" diverge.
 - **Missing eligibility** — an instance is and is not flagged at each confidence level, at
   boundary dates. `on-demand` is never flagged. `irregular` is flagged only in the last week.
-- **Cadence gate** — a 2-month fixture must **not** be classified even/odd; a 4-month
-  even-only fixture must be. The negative case is the one that can regress before October.
+- **Cadence classification** — gaps of all-1, all-2, all-3 and mixed each produce the right
+  cadence. Below the §6.4.1 threshold nothing non-monthly is assigned; the negative case
+  matters more than the positive one, because it is what stops two coincidental observations
+  becoming a confident wrong schedule.
+- **Recent-window rule** — a fixture with gaps `3,2,1,1` classifies as `monthly`, not
+  `irregular`. Use the real `rolling greens` sequence (2025-12, 2026-03, 2026-05, 2026-06,
+  2026-07); it is the case the rule exists for, and a whole-history classifier fails it.
+- **Anchoring** — a quarterly pair observed in months 10, 1, 4, 7 generates instances in
+  January, April, July and October, and **none** in the intervening months. A pair observed
+  in 2, 5, 8, 11 anchors to those instead. An off-anchor period must produce no instance at
+  all, so it can never read as missing.
+- **Manual override of cadence** — setting `even-months` by hand on a pair the gate has not
+  classified works, pins, and survives a recompute.
 - **Rollover idempotence** — running twice produces one instance and preserves state.
   `on-demand` produces none. `once` produces exactly one, in the right period.
 - **Pinning** — a recompute does not alter an obligation with `source='manual'`.
