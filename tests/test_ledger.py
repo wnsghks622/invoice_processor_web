@@ -161,6 +161,31 @@ class InstanceQueries(unittest.TestCase):
         self.assertEqual(after["state"], "done")
         self.assertTrue(after["done_at"])
 
+    def test_a_state_change_touches_only_the_named_instance(self):
+        # Two instances, because a single-row fixture cannot tell "UPDATE ... WHERE id=?"
+        # apart from "UPDATE every row" - and a dropped WHERE on this particular statement
+        # would silently mark a whole month done. This also pins satisfied_by, which the
+        # test above claims to cover in its name but never asserts: it is the column that
+        # records WHY a row is closed, and Task 8 writes 'invoice:<id>' into it through a
+        # different statement, so nothing else exercises it here.
+        conn = make_db()
+        self._seed(conn)
+        other = ledger.add_obligation(conn=conn, kind="EXPECT", title="Frontier",
+                                      window_rule="day:9", cadence="monthly")
+        conn.execute(
+            "INSERT INTO obligation_instance (obligation_id, period, due_from, due_to) "
+            "VALUES (?, ?, ?, ?)", (other, "August 2026", "2026-08-09", "2026-08-09"))
+        before = {r["title"]: r for r in
+                  ledger.instances_for_period("August 2026", conn=conn)}
+        ledger.set_instance_state(before["Athens"]["id"], "done",
+                                  satisfied_by="invoice:42", conn=conn)
+        after = {r["title"]: r for r in
+                 ledger.instances_for_period("August 2026", conn=conn)}
+        self.assertEqual(after["Athens"]["state"], "done")
+        self.assertEqual(after["Athens"]["satisfied_by"], "invoice:42")
+        self.assertEqual(after["Frontier"]["state"], "open")
+        self.assertEqual(after["Frontier"]["satisfied_by"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

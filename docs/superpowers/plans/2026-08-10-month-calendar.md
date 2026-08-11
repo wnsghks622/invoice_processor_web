@@ -924,6 +924,31 @@ class InstanceQueries(unittest.TestCase):
         after = ledger.instances_for_period("August 2026", conn=conn)[0]
         self.assertEqual(after["state"], "done")
         self.assertTrue(after["done_at"])
+
+    def test_a_state_change_touches_only_the_named_instance(self):
+        # Two instances, because a single-row fixture cannot tell "UPDATE ... WHERE id=?"
+        # apart from "UPDATE every row" - and a dropped WHERE on this particular statement
+        # would silently mark a whole month done. This also pins satisfied_by, which the
+        # test above claims to cover in its name but never asserts: it is the column that
+        # records WHY a row is closed, and Task 8 writes 'invoice:<id>' into it through a
+        # different statement, so nothing else exercises it here.
+        conn = make_db()
+        self._seed(conn)
+        other = ledger.add_obligation(conn=conn, kind="EXPECT", title="Frontier",
+                                      window_rule="day:9", cadence="monthly")
+        conn.execute(
+            "INSERT INTO obligation_instance (obligation_id, period, due_from, due_to) "
+            "VALUES (?, ?, ?, ?)", (other, "August 2026", "2026-08-09", "2026-08-09"))
+        before = {r["title"]: r for r in
+                  ledger.instances_for_period("August 2026", conn=conn)}
+        ledger.set_instance_state(before["Athens"]["id"], "done",
+                                  satisfied_by="invoice:42", conn=conn)
+        after = {r["title"]: r for r in
+                 ledger.instances_for_period("August 2026", conn=conn)}
+        self.assertEqual(after["Athens"]["state"], "done")
+        self.assertEqual(after["Athens"]["satisfied_by"], "invoice:42")
+        self.assertEqual(after["Frontier"]["state"], "open")
+        self.assertEqual(after["Frontier"]["satisfied_by"], "")
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1033,10 +1058,10 @@ def set_instance_state(instance_id: int, state: str, note: str = "",
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_ledger -v`
-Expected: PASS, 15 tests
+Expected: PASS, 16 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 187 tests
+Expected: PASS, 188 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1196,10 +1221,10 @@ def open_period(period: str, conn=None) -> dict:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_ledger -v`
-Expected: PASS, 23 tests
+Expected: PASS, 24 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 195 tests
+Expected: PASS, 196 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1537,7 +1562,7 @@ Run: `python -m unittest tests.test_periods -v`
 Expected: PASS, 52 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 212 tests
+Expected: PASS, 213 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1706,7 +1731,7 @@ Run: `python -m unittest tests.test_expectations -v`
 Expected: PASS, 19 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 219 tests
+Expected: PASS, 220 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1863,7 +1888,7 @@ Run: `python -m unittest tests.test_expectations -v`
 Expected: PASS, 26 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 226 tests
+Expected: PASS, 227 tests
 
 - [ ] **Step 5: Commit**
 
@@ -2005,10 +2030,10 @@ def is_missing(instance: dict, today: datetime.date) -> bool:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_ledger -v`
-Expected: PASS, 33 tests
+Expected: PASS, 34 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 236 tests
+Expected: PASS, 237 tests
 
 - [ ] **Step 5: Commit**
 
@@ -2386,7 +2411,7 @@ Run: `python -m unittest tests.test_app -v`
 Expected: PASS
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 246 tests
+Expected: PASS, 247 tests
 
 - [ ] **Step 7: Commit**
 
@@ -2573,7 +2598,7 @@ Add `properties=db.all_properties()` to `month_page`'s `render_template(...)` ca
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 253 tests
+Expected: PASS, 254 tests
 
 - [ ] **Step 6: Commit**
 
@@ -2751,7 +2776,7 @@ In `templates/month.html`, inside the row loop's `Source` cell, append this form
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 261 tests
+Expected: PASS, 262 tests
 
 - [ ] **Step 6: Commit**
 
@@ -2833,7 +2858,7 @@ with:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 263 tests
+Expected: PASS, 264 tests
 
 - [ ] **Step 5: Update the README**
 
@@ -2858,7 +2883,7 @@ git commit -m "feat: show the parsed invoice date in the list"
 
 ## Done criteria
 
-- `python -m unittest discover -s tests -t .` passes, 263 tests.
+- `python -m unittest discover -s tests -t .` passes, 264 tests.
 - The Month page lists expected invoices and reminders grouped by property, marks late ones, and states plainly when a period is empty rather than rendering blank.
 - A reminder can be added as one-off or recurring, optionally attached to a property.
 - A vendor can be marked on-demand and then never appears as missing.
