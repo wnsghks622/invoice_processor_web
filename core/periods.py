@@ -102,3 +102,75 @@ def resolve_window(rule: str, period: str,
         return iso((lo - 1) * 7 + 1), iso(hi * 7)
 
     raise ValueError(f"unknown window rule: {rule!r}")
+
+
+# A pair needs this much evidence before any non-monthly cadence is inferred. Below it,
+# a pair seen in June and August is equally consistent with even-months, quarterly, and
+# two unrelated jobs - so learning stays with monthly or irregular.
+CADENCE_GATE_OBSERVATIONS = 4
+CADENCE_GATE_SPAN_MONTHS = 4
+
+
+def _month_index(ym: str) -> int:
+    """'2026-08' -> an integer month index, so gaps are plain subtraction."""
+    return int(ym[:4]) * 12 + int(ym[5:7])
+
+
+def classify_cadence(months, recent: int = 2) -> Tuple[str, Optional[int]]:
+    """Classify billing cadence from the months a pair was observed in.
+
+    `months` are 'YYYY-MM' strings, any order, duplicates allowed. Returns
+    (cadence, anchor) where anchor is the parity for even/odd-months, month % 3 for
+    quarterly, and None otherwise.
+
+    Only the most recent `recent` gaps decide the cadence. Older observations still count
+    toward the gate and toward confidence, but a vendor that billed quarterly last year and
+    monthly since is monthly now - classifying it over the whole record would call it
+    irregular and delay its warning to the last week of the month.
+
+    `recent` is 2 because two equal gaps in a row are the smallest thing that is a repeat
+    rather than a coincidence, AND because a wider window would not fit the data: no live
+    pair has more than five observations, so a 4-gap window spans every pair's entire
+    history and quietly degrades into the whole-history rule this exists to replace. See
+    spec 6.1 "Why the window is two and not four".
+    """
+    uniq = sorted({m for m in months if m})
+    if len(uniq) < 2:
+        return "irregular", None
+
+    idx = [_month_index(m) for m in uniq]
+    gaps = [b - a for a, b in zip(idx, idx[1:])]
+    span = idx[-1] - idx[0] + 1
+    gated = len(uniq) >= CADENCE_GATE_OBSERVATIONS and span >= CADENCE_GATE_SPAN_MONTHS
+
+    recent_gaps = gaps[-recent:]
+    distinct = set(recent_gaps)
+
+    if distinct == {1}:
+        return "monthly", None
+    if gated and distinct == {2}:
+        last_month = idx[-1] % 12 or 12
+        return ("even-months", 0) if last_month % 2 == 0 else ("odd-months", 1)
+    if gated and distinct == {3}:
+        last_month = idx[-1] % 12 or 12
+        return "quarterly", last_month % 3
+    return "irregular", None
+
+
+def applies_to_period(cadence: str, anchor: Optional[int], period: str) -> bool:
+    """Does an obligation with this cadence generate an instance in this period?
+
+    `on-demand` never does, which is what makes a work-order vendor incapable of showing
+    up as missing. Off-anchor periods for even/odd/quarterly also generate nothing, rather
+    than generating an instance that would immediately read as missing.
+    """
+    if cadence == "on-demand":
+        return False
+    _, month = parse_period(period)
+    if cadence == "even-months":
+        return month % 2 == 0
+    if cadence == "odd-months":
+        return month % 2 == 1
+    if cadence == "quarterly":
+        return anchor is not None and month % 3 == anchor
+    return True          # monthly, irregular, once

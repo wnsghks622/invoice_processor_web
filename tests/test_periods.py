@@ -120,5 +120,124 @@ class ResolveWindow(unittest.TestCase):
             periods.resolve_window("phase-of-moon", "August 2026")
 
 
+class ClassifyCadence(unittest.TestCase):
+    """Cadence comes from the gaps between observations, and only recent ones decide it.
+
+    Four of the eight pairs in the live data that meet the gate changed frequency
+    mid-history, nearly all toward monthly - so whole-history classification would call
+    them irregular and surface them only in the last week of the month, which is late to
+    discover a missing utility bill.
+    """
+
+    def test_consecutive_months_are_monthly(self):
+        self.assertEqual(periods.classify_cadence(["2026-06", "2026-07", "2026-08"]),
+                         ("monthly", None))
+
+    def test_two_observations_with_a_gap_are_irregular_not_bimonthly(self):
+        # Below the gate, a 2-month gap is not enough evidence for even/odd.
+        self.assertEqual(periods.classify_cadence(["2026-05", "2026-07"]),
+                         ("irregular", None))
+
+    def test_even_months_need_the_gate_and_carry_parity(self):
+        self.assertEqual(
+            periods.classify_cadence(["2026-02", "2026-04", "2026-06", "2026-08"]),
+            ("even-months", 0))
+
+    def test_odd_months_carry_the_other_parity(self):
+        self.assertEqual(
+            periods.classify_cadence(["2026-01", "2026-03", "2026-05", "2026-07"]),
+            ("odd-months", 1))
+
+    def test_quarterly_anchors_on_the_observed_month(self):
+        # The real amtech elevator sequence: months 10, 1, 4, 7 - all == 1 (mod 3).
+        self.assertEqual(
+            periods.classify_cadence(["2025-10", "2026-01", "2026-04", "2026-07"]),
+            ("quarterly", 1))
+
+    def test_a_differently_anchored_quarterly_is_not_forced_onto_calendar_quarters(self):
+        self.assertEqual(
+            periods.classify_cadence(["2026-02", "2026-05", "2026-08", "2026-11"]),
+            ("quarterly", 2))
+
+    def test_recent_gaps_win_over_old_ones(self):
+        # The real rolling greens sequence. Whole-history gaps are 3,2,1,1 -> irregular.
+        # Recent gaps are 1,1 -> monthly, which is what it has actually been since May.
+        self.assertEqual(
+            periods.classify_cadence(
+                ["2025-12", "2026-03", "2026-05", "2026-06", "2026-07"]),
+            ("monthly", None))
+
+    def test_a_vendor_that_went_bimonthly_to_monthly_reads_monthly(self):
+        # The real mitsubishi electric sequence: gaps 2,2,1,1.
+        self.assertEqual(
+            periods.classify_cadence(
+                ["2026-02", "2026-04", "2026-06", "2026-07", "2026-08"]),
+            ("monthly", None))
+
+    def test_genuinely_mixed_recent_gaps_are_irregular(self):
+        self.assertEqual(
+            periods.classify_cadence(
+                ["2025-01", "2025-04", "2025-06", "2025-11", "2026-03"]),
+            ("irregular", None))
+
+    def test_below_the_gate_only_monthly_or_irregular_are_possible(self):
+        # Three observations at 2-month gaps: consistent, but not yet enough.
+        cadence, _ = periods.classify_cadence(["2026-02", "2026-04", "2026-06"])
+        self.assertIn(cadence, ("monthly", "irregular"))
+        self.assertNotEqual(cadence, "even-months")
+
+    def test_unsorted_input_is_handled(self):
+        self.assertEqual(periods.classify_cadence(["2026-08", "2026-06", "2026-07"]),
+                         ("monthly", None))
+
+    def test_duplicate_months_collapse(self):
+        # Two invoices in one month is one observation for cadence purposes.
+        self.assertEqual(
+            periods.classify_cadence(["2026-06", "2026-06", "2026-07", "2026-08"]),
+            ("monthly", None))
+
+    def test_fewer_than_two_observations_is_irregular(self):
+        self.assertEqual(periods.classify_cadence(["2026-08"]), ("irregular", None))
+        self.assertEqual(periods.classify_cadence([]), ("irregular", None))
+
+
+class AppliesToPeriod(unittest.TestCase):
+    def test_monthly_applies_everywhere(self):
+        for p in ("July 2026", "August 2026"):
+            self.assertTrue(periods.applies_to_period("monthly", None, p))
+
+    def test_irregular_applies_everywhere(self):
+        self.assertTrue(periods.applies_to_period("irregular", None, "August 2026"))
+
+    def test_on_demand_never_applies(self):
+        # This is what makes an on-demand vendor incapable of being "missing".
+        for p in ("July 2026", "August 2026", "September 2026"):
+            self.assertFalse(periods.applies_to_period("on-demand", None, p))
+
+    def test_even_months(self):
+        self.assertTrue(periods.applies_to_period("even-months", 0, "August 2026"))
+        self.assertFalse(periods.applies_to_period("even-months", 0, "July 2026"))
+
+    def test_odd_months(self):
+        self.assertTrue(periods.applies_to_period("odd-months", 1, "July 2026"))
+        self.assertFalse(periods.applies_to_period("odd-months", 1, "August 2026"))
+
+    def test_quarterly_only_on_its_anchor(self):
+        # anchor 1 -> January, April, July, October
+        self.assertTrue(periods.applies_to_period("quarterly", 1, "July 2026"))
+        self.assertTrue(periods.applies_to_period("quarterly", 1, "October 2026"))
+        self.assertFalse(periods.applies_to_period("quarterly", 1, "August 2026"))
+        self.assertFalse(periods.applies_to_period("quarterly", 1, "September 2026"))
+
+    def test_quarterly_on_a_different_anchor(self):
+        # anchor 2 -> February, May, August, November
+        self.assertTrue(periods.applies_to_period("quarterly", 2, "August 2026"))
+        self.assertFalse(periods.applies_to_period("quarterly", 2, "July 2026"))
+
+    def test_once_applies_everywhere_and_lets_the_window_rule_decide(self):
+        # A one-off is confined by its date: rule (Task 2), not by cadence.
+        self.assertTrue(periods.applies_to_period("once", None, "August 2026"))
+
+
 if __name__ == "__main__":
     unittest.main()
