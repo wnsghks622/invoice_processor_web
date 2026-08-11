@@ -293,5 +293,88 @@ class Sync(unittest.TestCase):
         self.assertEqual(ob["cadence"], "monthly")
 
 
+class SatisfyPeriod(unittest.TestCase):
+    def _expect(self, conn):
+        add_invoice(conn, "2026-06-05")
+        add_invoice(conn, "2026-07-05")
+        expectations.sync(conn=conn)
+        ledger.open_period("August 2026", conn=conn)
+
+    def test_an_arriving_invoice_satisfies_its_instance(self):
+        conn = make_db()
+        self._expect(conn)
+        add_invoice(conn, "2026-08-05")
+        self.assertEqual(expectations.satisfy_period("August 2026", conn=conn), 1)
+        inst = ledger.instances_for_period("August 2026", conn=conn)[0]
+        self.assertEqual(inst["state"], "done")
+        self.assertTrue(inst["satisfied_by"].startswith("invoice:"))
+
+    def test_an_invoice_in_another_month_does_not_satisfy(self):
+        conn = make_db()
+        self._expect(conn)
+        add_invoice(conn, "2026-09-05")
+        self.assertEqual(expectations.satisfy_period("August 2026", conn=conn), 0)
+        self.assertEqual(
+            ledger.instances_for_period("August 2026", conn=conn)[0]["state"], "open")
+
+    def test_an_invoice_for_another_vendor_does_not_satisfy(self):
+        conn = make_db()
+        self._expect(conn)
+        conn.execute("INSERT INTO vendors (id, short_name) VALUES (8, 'Other')")
+        add_invoice(conn, "2026-08-05", vendor_id=8)
+        self.assertEqual(expectations.satisfy_period("August 2026", conn=conn), 0)
+
+    def test_the_same_vendor_at_another_property_does_not_satisfy(self):
+        # Athens bills a dozen properties in the live data, so matching on vendor alone is
+        # not a hypothetical mistake. It would let one property's invoice close another
+        # property's expectation, and the month page would then show a bill as ARRIVED that
+        # never came - a false negative on the one thing this feature exists to catch. The
+        # default fixture has a single property, so without this case a matcher keyed on
+        # vendor_id alone passes the entire suite.
+        conn = make_db()
+        self._expect(conn)
+        conn.execute("INSERT INTO properties (id, canonical_name) VALUES (2, 'Solair')")
+        add_invoice(conn, "2026-08-05", property_id=2)
+        self.assertEqual(expectations.satisfy_period("August 2026", conn=conn), 0)
+        self.assertEqual(
+            ledger.instances_for_period("August 2026", conn=conn)[0]["state"], "open")
+
+    def test_it_is_idempotent(self):
+        conn = make_db()
+        self._expect(conn)
+        add_invoice(conn, "2026-08-05")
+        expectations.satisfy_period("August 2026", conn=conn)
+        self.assertEqual(expectations.satisfy_period("August 2026", conn=conn), 0)
+
+    def test_a_second_invoice_does_not_double_satisfy(self):
+        conn = make_db()
+        self._expect(conn)
+        add_invoice(conn, "2026-08-05")
+        add_invoice(conn, "2026-08-19")
+        self.assertEqual(expectations.satisfy_period("August 2026", conn=conn), 1)
+
+    def test_evidence_overrides_a_skip(self):
+        # You said it was not coming; it came. The invoice wins, and the note is kept.
+        conn = make_db()
+        self._expect(conn)
+        inst = ledger.instances_for_period("August 2026", conn=conn)[0]
+        ledger.set_instance_state(inst["id"], "skipped", note="vendor said none this month",
+                                  satisfied_by="", conn=conn)
+        add_invoice(conn, "2026-08-05")
+        self.assertEqual(expectations.satisfy_period("August 2026", conn=conn), 1)
+        after = ledger.instances_for_period("August 2026", conn=conn)[0]
+        self.assertEqual(after["state"], "done")
+        self.assertEqual(after["note"], "vendor said none this month")
+
+    def test_a_reminder_is_never_auto_satisfied(self):
+        # ACTION instances are yours to tick; no invoice can close them.
+        conn = make_db()
+        ledger.add_obligation(conn=conn, kind="ACTION", title="call Michelle",
+                              window_rule="day:12", cadence="monthly")
+        ledger.open_period("August 2026", conn=conn)
+        add_invoice(conn, "2026-08-12")
+        self.assertEqual(expectations.satisfy_period("August 2026", conn=conn), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

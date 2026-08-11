@@ -13,6 +13,7 @@ Two rules this module exists to enforce:
   (15 days), and is the user's batching habit rather than the vendor's schedule.
 """
 import collections
+import datetime
 import statistics
 from typing import Optional
 
@@ -127,3 +128,48 @@ def sync(conn=None) -> dict:
         updated += 1
 
     return {"created": created, "updated": updated, "pinned": pinned}
+
+
+def satisfy_period(period: str, conn=None) -> int:
+    """Close every EXPECT instance in `period` that has a matching invoice.
+
+    Matching is (property_id, vendor_id) plus an invoice_date_iso inside the period. One
+    invoice satisfies one instance; a second invoice from the same vendor in the same month
+    is left alone rather than silently double-counted - genuine duplicates are already the
+    processor's job.
+
+    Evidence beats a skip. If you marked something as not coming and it then arrives, the
+    instance flips to done and your note is preserved, because the note is still the record
+    of what you believed at the time.
+    """
+    satisfied = 0
+    with db._conn_or(conn) as c:
+        by_name = _property_ids(c)
+        invoices = collections.defaultdict(list)
+        for r in c.execute(
+                "SELECT id, property, vendor_id, invoice_date_iso FROM invoices "
+                "WHERE vendor_id IS NOT NULL AND COALESCE(invoice_date_iso,'') <> ''"):
+            pid = by_name.get(r["property"])
+            if pid is None:
+                continue
+            if periods.period_of(r["invoice_date_iso"]) == period:
+                invoices[(pid, r["vendor_id"])].append(r["id"])
+
+        rows = c.execute(
+            "SELECT i.id AS id, o.kind AS kind, o.property_id AS pid, o.vendor_id AS vid, "
+            "       i.satisfied_by AS satisfied_by "
+            "FROM obligation_instance i JOIN obligation o ON o.id = i.obligation_id "
+            "WHERE i.period = ? AND o.kind = 'EXPECT'", (period,)).fetchall()
+
+        for inst in rows:
+            if inst["satisfied_by"]:
+                continue                      # already carries evidence
+            ids = invoices.get((inst["pid"], inst["vid"]))
+            if not ids:
+                continue
+            c.execute(
+                "UPDATE obligation_instance SET state='done', satisfied_by=?, done_at=? "
+                "WHERE id=?",
+                (f"invoice:{ids[0]}", datetime.date.today().isoformat(), inst["id"]))
+            satisfied += 1
+    return satisfied
