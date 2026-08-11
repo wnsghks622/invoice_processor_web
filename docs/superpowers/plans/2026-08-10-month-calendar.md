@@ -1291,10 +1291,16 @@ def make_db():
 
 
 def add_invoice(conn, iso, property_id=1, vendor_id=7, day_note=""):
+    # Look the name up rather than hard-coding it. invoices stores the property NAME and
+    # build_profiles maps that name back through the properties table, so a literal here
+    # silently drops every row whose name is not registered - which is exactly what a
+    # hard-coded "Other" did: property 2 was inserted as 'Solair', the invoice was written
+    # as 'Other', the lookup missed, and the pair vanished from the profiles.
+    name = conn.execute("SELECT canonical_name FROM properties WHERE id=?",
+                        (property_id,)).fetchone()["canonical_name"]
     conn.execute(
         "INSERT INTO invoices (property, vendor_id, invoice_date, invoice_date_iso) "
-        "VALUES (?, ?, ?, ?)",
-        ("Kenmore Plaza" if property_id == 1 else "Other", vendor_id, day_note or iso, iso))
+        "VALUES (?, ?, ?, ?)", (name, vendor_id, day_note or iso, iso))
 
 
 class BuildProfiles(unittest.TestCase):
