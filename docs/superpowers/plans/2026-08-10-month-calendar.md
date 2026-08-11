@@ -2091,6 +2091,26 @@ class IsMissing(unittest.TestCase):
         self.assertFalse(
             ledger.is_missing(self._inst(due_to=""), datetime.date(2026, 8, 31)))
 
+    def test_the_last_week_is_anchored_to_the_row_s_own_period(self):
+        # February is the point: 28 days, so its last week starts 2026-02-22. Every other
+        # last-week case here uses August 2026, which leaves two different wrong
+        # implementations indistinguishable from the right one. A slack of 19 days from
+        # due_to reproduces August's 2026-08-25 exactly, and so does hard-coding "August
+        # 2026" instead of reading instance["period"]. Both say False on 2026-02-22; the
+        # real rule says True.
+        inst = self._inst(confidence="low", period="February 2026",
+                          due_from="2026-02-05", due_to="2026-02-05")
+        self.assertFalse(ledger.is_missing(inst, datetime.date(2026, 2, 21)))
+        self.assertTrue(ledger.is_missing(inst, datetime.date(2026, 2, 22)))
+
+    def test_a_missing_confidence_falls_back_to_the_quietest_setting(self):
+        # The fallback in SLACK_DAYS.get(... or "low") is a deliberate choice: a row whose
+        # confidence never got written is the row the system knows LEAST about, so it must
+        # wait for the last week rather than earn a 2-day slack. Flipped to "high" this is
+        # the cry-wolf direction, and nothing else pins it.
+        self.assertFalse(
+            ledger.is_missing(self._inst(confidence=""), datetime.date(2026, 8, 10)))
+
     def test_a_reminder_uses_its_window_with_no_slack(self):
         # You set the date yourself, so there is no learned uncertainty to allow for.
         inst = self._inst(kind="ACTION", confidence="high", due_to="2026-08-12")
@@ -2152,10 +2172,10 @@ def is_missing(instance: dict, today: datetime.date) -> bool:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_ledger -v`
-Expected: PASS, 35 tests
+Expected: PASS, 37 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 243 tests
+Expected: PASS, 245 tests
 
 - [ ] **Step 5: Commit**
 
@@ -2533,7 +2553,7 @@ Run: `python -m unittest tests.test_app -v`
 Expected: PASS
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 253 tests
+Expected: PASS, 255 tests
 
 - [ ] **Step 7: Commit**
 
@@ -2720,7 +2740,7 @@ Add `properties=db.all_properties()` to `month_page`'s `render_template(...)` ca
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 260 tests
+Expected: PASS, 262 tests
 
 - [ ] **Step 6: Commit**
 
@@ -2898,7 +2918,7 @@ In `templates/month.html`, inside the row loop's `Source` cell, append this form
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 268 tests
+Expected: PASS, 270 tests
 
 - [ ] **Step 6: Commit**
 
@@ -2980,7 +3000,7 @@ with:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 270 tests
+Expected: PASS, 272 tests
 
 - [ ] **Step 5: Update the README**
 
@@ -3005,7 +3025,7 @@ git commit -m "feat: show the parsed invoice date in the list"
 
 ## Done criteria
 
-- `python -m unittest discover -s tests -t .` passes, 270 tests.
+- `python -m unittest discover -s tests -t .` passes, 272 tests.
 - The Month page lists expected invoices and reminders grouped by property, marks late ones, and states plainly when a period is empty rather than rendering blank.
 - A reminder can be added as one-off or recurring, optionally attached to a property.
 - A vendor can be marked on-demand and then never appears as missing.
