@@ -265,5 +265,73 @@ class OpenPeriod(unittest.TestCase):
         self.assertEqual(ledger.open_period("August 2026", conn=conn)["created"], 0)
 
 
+import datetime
+
+
+class IsMissing(unittest.TestCase):
+    """A list that cries wolf is a list nobody opens, so an instance becomes 'missing'
+    only once it is genuinely late for its own confidence level."""
+
+    def _inst(self, **over):
+        base = {
+            "kind": "EXPECT", "state": "open", "satisfied_by": "",
+            "period": "August 2026", "due_from": "2026-08-05", "due_to": "2026-08-05",
+            "confidence": "high", "cadence": "monthly", "notes": "",
+        }
+        base.update(over)
+        return base
+
+    def test_not_missing_before_the_window_closes(self):
+        self.assertFalse(ledger.is_missing(self._inst(), datetime.date(2026, 8, 4)))
+
+    def test_not_missing_inside_the_slack(self):
+        self.assertFalse(ledger.is_missing(self._inst(), datetime.date(2026, 8, 7)))
+
+    def test_missing_once_high_confidence_slack_expires(self):
+        self.assertTrue(ledger.is_missing(self._inst(), datetime.date(2026, 8, 8)))
+
+    def test_medium_confidence_gets_a_week(self):
+        inst = self._inst(confidence="medium")
+        self.assertFalse(ledger.is_missing(inst, datetime.date(2026, 8, 12)))
+        self.assertTrue(ledger.is_missing(inst, datetime.date(2026, 8, 13)))
+
+    def test_low_confidence_waits_for_the_last_week(self):
+        inst = self._inst(confidence="low")
+        self.assertFalse(ledger.is_missing(inst, datetime.date(2026, 8, 24)))
+        self.assertTrue(ledger.is_missing(inst, datetime.date(2026, 8, 25)))
+
+    def test_irregular_cadence_also_waits_for_the_last_week(self):
+        inst = self._inst(confidence="high", cadence="irregular")
+        self.assertFalse(ledger.is_missing(inst, datetime.date(2026, 8, 10)))
+        self.assertTrue(ledger.is_missing(inst, datetime.date(2026, 8, 25)))
+
+    def test_a_satisfied_instance_is_never_missing(self):
+        inst = self._inst(state="done", satisfied_by="invoice:5")
+        self.assertFalse(ledger.is_missing(inst, datetime.date(2026, 8, 31)))
+
+    def test_a_skipped_instance_is_never_missing(self):
+        inst = self._inst(state="skipped")
+        self.assertFalse(ledger.is_missing(inst, datetime.date(2026, 8, 31)))
+
+    def test_an_unconfirmed_expectation_is_never_missing(self):
+        # Promotion is a guess until you confirm it. A wrong guess must cost nothing.
+        inst = self._inst(notes="unconfirmed")
+        self.assertFalse(ledger.is_missing(inst, datetime.date(2026, 8, 31)))
+
+    def test_an_instance_with_no_window_is_not_missing(self):
+        # due_to defaults to '' in the schema and an instance can be created without one -
+        # Task 1's schema tests insert exactly that shape, and instances_for_period returns
+        # it like any other row. Without the guard, date.fromisoformat('') raises ValueError
+        # and takes the entire month page down rather than skipping one row.
+        self.assertFalse(
+            ledger.is_missing(self._inst(due_to=""), datetime.date(2026, 8, 31)))
+
+    def test_a_reminder_uses_its_window_with_no_slack(self):
+        # You set the date yourself, so there is no learned uncertainty to allow for.
+        inst = self._inst(kind="ACTION", confidence="high", due_to="2026-08-12")
+        self.assertFalse(ledger.is_missing(inst, datetime.date(2026, 8, 12)))
+        self.assertTrue(ledger.is_missing(inst, datetime.date(2026, 8, 13)))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -126,3 +126,44 @@ def open_period(period: str, conn=None) -> dict:
             else:
                 existing += 1
     return {"created": created, "existing": existing, "skipped": skipped}
+
+
+# Days past the due window before an EXPECT is treated as missing. None means "do not
+# surface until the last week of the period" - the right answer when the schedule itself
+# is only loosely known, because flagging on a guessed date is noise.
+SLACK_DAYS = {"high": 2, "medium": 7, "low": None}
+
+# Set by expectations.sync on a freshly promoted pair. Mirrored here rather than imported
+# to keep ledger free of a dependency on expectations, which depends on ledger.
+UNCONFIRMED = "unconfirmed"
+
+
+def is_missing(instance: dict, today: datetime.date) -> bool:
+    """Is this instance late enough to be worth flagging?
+
+    Only open, unsatisfied instances can be missing. A reminder (ACTION) uses its own
+    window with no slack, because you chose the date. A learned expectation gets slack
+    scaled to how well its schedule is actually known.
+    """
+    if instance.get("state") != "open" or instance.get("satisfied_by"):
+        return False
+    if (instance.get("notes") or "") == UNCONFIRMED:
+        return False
+
+    due_to = instance.get("due_to") or ""
+    if not due_to:
+        return False
+    due = datetime.date.fromisoformat(due_to)
+
+    if instance.get("kind") == "ACTION":
+        return today > due
+
+    if instance.get("cadence") == "irregular":
+        slack = None
+    else:
+        slack = SLACK_DAYS.get(instance.get("confidence") or "low", None)
+
+    if slack is None:
+        _, last = periods.period_bounds(instance["period"])
+        return today >= last - datetime.timedelta(days=6)
+    return today > due + datetime.timedelta(days=slack)
