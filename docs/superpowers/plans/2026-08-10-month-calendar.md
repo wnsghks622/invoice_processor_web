@@ -1699,6 +1699,25 @@ class Sync(unittest.TestCase):
         after = ledger.get_obligation(ob["id"], conn=conn)
         self.assertEqual(after["notes"], "")
 
+    def test_sync_does_not_re_mark_an_expectation_you_confirmed(self):
+        # Clearing the marker is how you say "yes, this really does recur". Sync still has
+        # to refresh the learned numbers afterwards, so the risk is that it puts the marker
+        # back on its way past and sends the obligation round the confirmation loop again -
+        # which would make confirming pointless and is the cry-wolf direction 6.6 exists to
+        # prevent. Note source stays 'learned' here: this is the UPDATE path, not the
+        # pinned path that test_never_overwrites_an_obligation_you_edited covers.
+        conn = make_db()
+        self._pair(conn, ["2026-06-05", "2026-07-06"])
+        expectations.sync(conn=conn)
+        ob = ledger.active_obligations(conn=conn)[0]
+        ledger.update_obligation(ob["id"], conn=conn, notes="")
+
+        add_invoice(conn, "2026-08-05")
+        expectations.sync(conn=conn)
+        after = ledger.get_obligation(ob["id"], conn=conn)
+        self.assertEqual(after["notes"], "")
+        self.assertEqual(after["confidence"], "high")     # refreshed, not frozen
+
     def test_the_obligation_carries_the_learned_window(self):
         conn = make_db()
         self._pair(conn, ["2026-05-05", "2026-06-06", "2026-07-05"])
@@ -1772,10 +1791,10 @@ def sync(conn=None) -> dict:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_expectations -v`
-Expected: PASS, 21 tests
+Expected: PASS, 22 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 222 tests
+Expected: PASS, 223 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1929,10 +1948,10 @@ Add `import datetime` to the imports at the top of `core/expectations.py`.
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_expectations -v`
-Expected: PASS, 28 tests
+Expected: PASS, 29 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 229 tests
+Expected: PASS, 230 tests
 
 - [ ] **Step 5: Commit**
 
@@ -2077,7 +2096,7 @@ Run: `python -m unittest tests.test_ledger -v`
 Expected: PASS, 34 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 239 tests
+Expected: PASS, 240 tests
 
 - [ ] **Step 5: Commit**
 
@@ -2455,7 +2474,7 @@ Run: `python -m unittest tests.test_app -v`
 Expected: PASS
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 249 tests
+Expected: PASS, 250 tests
 
 - [ ] **Step 7: Commit**
 
@@ -2642,7 +2661,7 @@ Add `properties=db.all_properties()` to `month_page`'s `render_template(...)` ca
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 256 tests
+Expected: PASS, 257 tests
 
 - [ ] **Step 6: Commit**
 
@@ -2820,7 +2839,7 @@ In `templates/month.html`, inside the row loop's `Source` cell, append this form
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 264 tests
+Expected: PASS, 265 tests
 
 - [ ] **Step 6: Commit**
 
@@ -2902,7 +2921,7 @@ with:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 266 tests
+Expected: PASS, 267 tests
 
 - [ ] **Step 5: Update the README**
 
@@ -2927,7 +2946,7 @@ git commit -m "feat: show the parsed invoice date in the list"
 
 ## Done criteria
 
-- `python -m unittest discover -s tests -t .` passes, 266 tests.
+- `python -m unittest discover -s tests -t .` passes, 267 tests.
 - The Month page lists expected invoices and reminders grouped by property, marks late ones, and states plainly when a period is empty rather than rendering blank.
 - A reminder can be added as one-off or recurring, optionally attached to a property.
 - A vendor can be marked on-demand and then never appears as missing.
