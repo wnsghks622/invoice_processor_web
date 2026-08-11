@@ -1875,6 +1875,21 @@ class SatisfyPeriod(unittest.TestCase):
         add_invoice(conn, "2026-08-05", vendor_id=8)
         self.assertEqual(expectations.satisfy_period("August 2026", conn=conn), 0)
 
+    def test_the_same_vendor_at_another_property_does_not_satisfy(self):
+        # Athens bills a dozen properties in the live data, so matching on vendor alone is
+        # not a hypothetical mistake. It would let one property's invoice close another
+        # property's expectation, and the month page would then show a bill as ARRIVED that
+        # never came - a false negative on the one thing this feature exists to catch. The
+        # default fixture has a single property, so without this case a matcher keyed on
+        # vendor_id alone passes the entire suite.
+        conn = make_db()
+        self._expect(conn)
+        conn.execute("INSERT INTO properties (id, canonical_name) VALUES (2, 'Solair')")
+        add_invoice(conn, "2026-08-05", property_id=2)
+        self.assertEqual(expectations.satisfy_period("August 2026", conn=conn), 0)
+        self.assertEqual(
+            ledger.instances_for_period("August 2026", conn=conn)[0]["state"], "open")
+
     def test_it_is_idempotent(self):
         conn = make_db()
         self._expect(conn)
@@ -1972,10 +1987,10 @@ Add `import datetime` to the imports at the top of `core/expectations.py`.
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_expectations -v`
-Expected: PASS, 30 tests
+Expected: PASS, 31 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 231 tests
+Expected: PASS, 232 tests
 
 - [ ] **Step 5: Commit**
 
@@ -2120,7 +2135,7 @@ Run: `python -m unittest tests.test_ledger -v`
 Expected: PASS, 34 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 241 tests
+Expected: PASS, 242 tests
 
 - [ ] **Step 5: Commit**
 
@@ -2498,7 +2513,7 @@ Run: `python -m unittest tests.test_app -v`
 Expected: PASS
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 251 tests
+Expected: PASS, 252 tests
 
 - [ ] **Step 7: Commit**
 
@@ -2685,7 +2700,7 @@ Add `properties=db.all_properties()` to `month_page`'s `render_template(...)` ca
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 258 tests
+Expected: PASS, 259 tests
 
 - [ ] **Step 6: Commit**
 
@@ -2863,7 +2878,7 @@ In `templates/month.html`, inside the row loop's `Source` cell, append this form
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 266 tests
+Expected: PASS, 267 tests
 
 - [ ] **Step 6: Commit**
 
@@ -2945,7 +2960,7 @@ with:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 268 tests
+Expected: PASS, 269 tests
 
 - [ ] **Step 5: Update the README**
 
@@ -2970,7 +2985,7 @@ git commit -m "feat: show the parsed invoice date in the list"
 
 ## Done criteria
 
-- `python -m unittest discover -s tests -t .` passes, 268 tests.
+- `python -m unittest discover -s tests -t .` passes, 269 tests.
 - The Month page lists expected invoices and reminders grouped by property, marks late ones, and states plainly when a period is empty rather than rendering blank.
 - A reminder can be added as one-off or recurring, optionally attached to a property.
 - A vendor can be marked on-demand and then never appears as missing.
