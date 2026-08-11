@@ -1919,12 +1919,24 @@ class SatisfyPeriod(unittest.TestCase):
 
     def test_a_reminder_is_never_auto_satisfied(self):
         # ACTION instances are yours to tick; no invoice can close them.
+        #
+        # The reminder is ATTACHED to the same property and vendor as the invoice, which is
+        # what makes this test about the kind filter at all. Left unattached it carries a
+        # (None, None) key that matches no invoice under any implementation, so it would
+        # pass whether or not satisfy_period filters on kind - and 5 supports attaching a
+        # reminder to a property and vendor, so the attached case is the one that can go
+        # wrong. Without the filter an arriving Athens invoice silently ticks "call
+        # Michelle" for you.
         conn = make_db()
         ledger.add_obligation(conn=conn, kind="ACTION", title="call Michelle",
+                              property_id=1, vendor_id=7,
                               window_rule="day:12", cadence="monthly")
         ledger.open_period("August 2026", conn=conn)
         add_invoice(conn, "2026-08-12")
         self.assertEqual(expectations.satisfy_period("August 2026", conn=conn), 0)
+        inst = ledger.instances_for_period("August 2026", conn=conn)[0]
+        self.assertEqual(inst["state"], "open")
+        self.assertEqual(inst["satisfied_by"], "")
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
