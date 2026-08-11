@@ -187,5 +187,83 @@ class InstanceQueries(unittest.TestCase):
         self.assertEqual(after["Frontier"]["satisfied_by"], "")
 
 
+from core import periods
+
+
+class OpenPeriod(unittest.TestCase):
+    def test_creates_one_instance_per_applicable_obligation(self):
+        conn = make_db()
+        ledger.add_obligation(conn=conn, kind="ACTION", title="a", window_rule="day:1",
+                              cadence="monthly")
+        ledger.add_obligation(conn=conn, kind="ACTION", title="b", window_rule="week:2",
+                              cadence="monthly")
+        result = ledger.open_period("August 2026", conn=conn)
+        self.assertEqual(result["created"], 2)
+        self.assertEqual(len(ledger.instances_for_period("August 2026", conn=conn)), 2)
+
+    def test_is_idempotent_and_preserves_state(self):
+        conn = make_db()
+        ledger.add_obligation(conn=conn, kind="ACTION", title="a", window_rule="day:1",
+                              cadence="monthly")
+        ledger.open_period("August 2026", conn=conn)
+        inst = ledger.instances_for_period("August 2026", conn=conn)[0]
+        ledger.set_instance_state(inst["id"], "done", conn=conn)
+
+        again = ledger.open_period("August 2026", conn=conn)
+        self.assertEqual((again["created"], again["existing"]), (0, 1))
+        after = ledger.instances_for_period("August 2026", conn=conn)[0]
+        self.assertEqual(after["state"], "done")     # not reset
+
+    def test_resolves_the_window_onto_the_period(self):
+        conn = make_db()
+        ledger.add_obligation(conn=conn, kind="ACTION", title="a", window_rule="day:28-30",
+                              cadence="monthly")
+        ledger.open_period("February 2026", conn=conn)
+        inst = ledger.instances_for_period("February 2026", conn=conn)[0]
+        self.assertEqual((inst["due_from"], inst["due_to"]), ("2026-02-28", "2026-02-28"))
+
+    def test_on_demand_obligations_never_get_an_instance(self):
+        # The whole point: a work-order vendor cannot be "missing".
+        conn = make_db()
+        ledger.add_obligation(conn=conn, kind="EXPECT", title="plumber",
+                              window_rule="learned", cadence="on-demand")
+        result = ledger.open_period("August 2026", conn=conn)
+        self.assertEqual(result["created"], 0)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(ledger.instances_for_period("August 2026", conn=conn), [])
+
+    def test_off_anchor_periods_get_nothing(self):
+        conn = make_db()
+        ledger.add_obligation(conn=conn, kind="EXPECT", title="LADWP Monette",
+                              window_rule="day:15", cadence="odd-months", anchor=1)
+        self.assertEqual(ledger.open_period("August 2026", conn=conn)["created"], 0)
+        self.assertEqual(ledger.open_period("September 2026", conn=conn)["created"], 1)
+
+    def test_a_quarterly_obligation_lands_only_on_its_anchor(self):
+        conn = make_db()
+        ledger.add_obligation(conn=conn, kind="EXPECT", title="amtech",
+                              window_rule="day:20", cadence="quarterly", anchor=1)
+        for period, expected in (("July 2026", 1), ("August 2026", 0),
+                                 ("September 2026", 0), ("October 2026", 1)):
+            with self.subTest(period=period):
+                self.assertEqual(
+                    ledger.open_period(period, conn=conn)["created"], expected)
+
+    def test_a_one_off_lands_in_exactly_one_period(self):
+        conn = make_db()
+        ledger.add_obligation(conn=conn, kind="ACTION", title="check the distribution",
+                              window_rule="date:2026-08-18", cadence="once")
+        self.assertEqual(ledger.open_period("July 2026", conn=conn)["created"], 0)
+        self.assertEqual(ledger.open_period("August 2026", conn=conn)["created"], 1)
+        self.assertEqual(ledger.open_period("September 2026", conn=conn)["created"], 0)
+
+    def test_inactive_obligations_are_not_rolled(self):
+        conn = make_db()
+        oid = ledger.add_obligation(conn=conn, kind="ACTION", title="a",
+                                    window_rule="day:1", cadence="monthly")
+        ledger.update_obligation(oid, conn=conn, active=0)
+        self.assertEqual(ledger.open_period("August 2026", conn=conn)["created"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

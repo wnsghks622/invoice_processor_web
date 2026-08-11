@@ -12,6 +12,7 @@ import datetime
 from typing import Optional
 
 from . import db
+from . import periods
 
 OBLIGATION_COLUMNS = [
     "kind", "title", "property_id", "vendor_id", "window_rule",
@@ -90,3 +91,38 @@ def set_instance_state(instance_id: int, state: str, note: str = "",
         c.execute(
             "UPDATE obligation_instance SET state=?, note=?, satisfied_by=?, done_at=? "
             "WHERE id=?", (state, note, satisfied_by, stamp, instance_id))
+
+
+def open_period(period: str, conn=None) -> dict:
+    """Materialize a period: one instance per applicable active obligation.
+
+    Idempotent by construction - UNIQUE (obligation_id, period) means a re-run inserts only
+    what is missing and never resets state on an instance that already exists. Opening a
+    month twice is a no-op, which matters because the button is easy to press twice.
+
+    An obligation is skipped entirely when its cadence does not apply to this period
+    (on-demand always; even/odd/quarterly off their anchor) or when its window rule does
+    not resolve here (a one-off dated in another month). Skipping means no row at all,
+    rather than a row that would immediately read as missing.
+    """
+    created = existing = skipped = 0
+    with db._conn_or(conn) as c:
+        rows = c.execute("SELECT * FROM obligation WHERE COALESCE(active,1)=1").fetchall()
+        for o in rows:
+            if not periods.applies_to_period(o["cadence"], o["anchor"], period):
+                skipped += 1
+                continue
+            window = periods.resolve_window(o["window_rule"], period)
+            if window is None:
+                skipped += 1
+                continue
+            due_from, due_to = window
+            cur = c.execute(
+                "INSERT OR IGNORE INTO obligation_instance "
+                "(obligation_id, period, due_from, due_to) VALUES (?, ?, ?, ?)",
+                (o["id"], period, due_from, due_to))
+            if cur.rowcount:
+                created += 1
+            else:
+                existing += 1
+    return {"created": created, "existing": existing, "skipped": skipped}
