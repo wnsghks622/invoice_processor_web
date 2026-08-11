@@ -16,7 +16,7 @@ import collections
 import statistics
 from typing import Optional
 
-from . import db, periods
+from . import db, ledger, periods
 
 # A pair must be seen in at least this many distinct months before it is a profile at all.
 MIN_MONTHS = 2
@@ -78,3 +78,52 @@ def build_profiles(conn=None) -> dict:
             "anchor": anchor,
         }
     return profiles
+
+
+# Marker on a freshly-promoted obligation, until you say whether it is really recurring.
+# Task 9 excludes anything carrying it from being flagged missing.
+UNCONFIRMED = "unconfirmed"
+
+
+def sync(conn=None) -> dict:
+    """Create or refresh learned EXPECT obligations from the current profiles.
+
+    An obligation whose source is 'manual' is pinned: you edited it, so recompute leaves it
+    entirely alone. Learned values only ever overwrite values nobody has touched.
+
+    A newly created obligation is marked UNCONFIRMED. Promotion is cheap and wrong guesses
+    are common - roughly half the vendor/property pairs in the live history bill only when
+    work is done - so a new expectation does not get to raise a warning until a human has
+    said it is real.
+    """
+    profiles = build_profiles(conn=conn)
+    created = updated = pinned = 0
+
+    with db._conn_or(conn) as c:
+        existing = {}
+        for r in c.execute(
+                "SELECT * FROM obligation WHERE kind='EXPECT' "
+                "AND property_id IS NOT NULL AND vendor_id IS NOT NULL"):
+            existing[(r["property_id"], r["vendor_id"])] = dict(r)
+
+    for key, p in profiles.items():
+        fields = {
+            "cadence": p["cadence"],
+            "anchor": p["anchor"],
+            "confidence": p["confidence"],
+        }
+        current = existing.get(key)
+        if current is None:
+            ledger.add_obligation(
+                conn=conn, kind="EXPECT", property_id=key[0], vendor_id=key[1],
+                window_rule="learned", source="learned", notes=UNCONFIRMED,
+                title="", **fields)
+            created += 1
+            continue
+        if current.get("source") == "manual":
+            pinned += 1
+            continue
+        ledger.update_obligation(current["id"], conn=conn, **fields)
+        updated += 1
+
+    return {"created": created, "updated": updated, "pinned": pinned}

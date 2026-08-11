@@ -174,5 +174,100 @@ class BuildProfiles(unittest.TestCase):
         self.assertEqual(p["confidence"], "medium")
 
 
+from core import ledger
+
+
+class Sync(unittest.TestCase):
+    def _pair(self, conn, isos):
+        for iso in isos:
+            add_invoice(conn, iso)
+
+    def test_creates_one_expect_obligation_per_profile(self):
+        conn = make_db()
+        self._pair(conn, ["2026-06-05", "2026-07-06"])
+        result = expectations.sync(conn=conn)
+        self.assertEqual(result["created"], 1)
+        obs = ledger.active_obligations(conn=conn)
+        self.assertEqual(len(obs), 1)
+        self.assertEqual((obs[0]["kind"], obs[0]["source"]), ("EXPECT", "learned"))
+        self.assertEqual((obs[0]["property_id"], obs[0]["vendor_id"]), (1, 7))
+
+    def test_is_idempotent(self):
+        conn = make_db()
+        self._pair(conn, ["2026-06-05", "2026-07-06"])
+        expectations.sync(conn=conn)
+        again = expectations.sync(conn=conn)
+        self.assertEqual(again["created"], 0)
+        self.assertEqual(len(ledger.active_obligations(conn=conn)), 1)
+
+    def test_updates_a_learned_obligation_when_the_profile_moves(self):
+        conn = make_db()
+        self._pair(conn, ["2026-05-05", "2026-06-05"])
+        expectations.sync(conn=conn)
+        add_invoice(conn, "2026-07-05")            # now 3 observations, tight
+        expectations.sync(conn=conn)
+        ob = ledger.active_obligations(conn=conn)[0]
+        self.assertEqual(ob["confidence"], "high")
+
+    def test_never_overwrites_an_obligation_you_edited(self):
+        # A manual edit pins the obligation. Recompute must not revert a decision.
+        conn = make_db()
+        self._pair(conn, ["2026-06-05", "2026-07-06"])
+        expectations.sync(conn=conn)
+        ob = ledger.active_obligations(conn=conn)[0]
+        ledger.update_obligation(ob["id"], conn=conn, cadence="on-demand", source="manual")
+
+        result = expectations.sync(conn=conn)
+        self.assertEqual(result["pinned"], 1)
+        after = ledger.get_obligation(ob["id"], conn=conn)
+        self.assertEqual(after["cadence"], "on-demand")
+        self.assertEqual(after["source"], "manual")
+
+    def test_a_new_pair_starts_unconfirmed(self):
+        # Promotion must not silently create a confident monthly expectation - a repair
+        # vendor that happens to bill twice would then nag every month afterwards.
+        conn = make_db()
+        self._pair(conn, ["2026-06-05", "2026-07-06"])
+        expectations.sync(conn=conn)
+        ob = ledger.active_obligations(conn=conn)[0]
+        self.assertEqual(ob["notes"], expectations.UNCONFIRMED)
+
+    def test_confirming_clears_the_unconfirmed_marker(self):
+        conn = make_db()
+        self._pair(conn, ["2026-06-05", "2026-07-06"])
+        expectations.sync(conn=conn)
+        ob = ledger.active_obligations(conn=conn)[0]
+        ledger.update_obligation(ob["id"], conn=conn, notes="", source="manual")
+        after = ledger.get_obligation(ob["id"], conn=conn)
+        self.assertEqual(after["notes"], "")
+
+    def test_sync_does_not_re_mark_an_expectation_you_confirmed(self):
+        # Clearing the marker is how you say "yes, this really does recur". Sync still has
+        # to refresh the learned numbers afterwards, so the risk is that it puts the marker
+        # back on its way past and sends the obligation round the confirmation loop again -
+        # which would make confirming pointless and is the cry-wolf direction 6.6 exists to
+        # prevent. Note source stays 'learned' here: this is the UPDATE path, not the
+        # pinned path that test_never_overwrites_an_obligation_you_edited covers.
+        conn = make_db()
+        self._pair(conn, ["2026-06-05", "2026-07-06"])
+        expectations.sync(conn=conn)
+        ob = ledger.active_obligations(conn=conn)[0]
+        ledger.update_obligation(ob["id"], conn=conn, notes="")
+
+        add_invoice(conn, "2026-08-05")
+        expectations.sync(conn=conn)
+        after = ledger.get_obligation(ob["id"], conn=conn)
+        self.assertEqual(after["notes"], "")
+        self.assertEqual(after["confidence"], "high")     # refreshed, not frozen
+
+    def test_the_obligation_carries_the_learned_window(self):
+        conn = make_db()
+        self._pair(conn, ["2026-05-05", "2026-06-06", "2026-07-05"])
+        expectations.sync(conn=conn)
+        ob = ledger.active_obligations(conn=conn)[0]
+        self.assertEqual(ob["window_rule"], "learned")
+        self.assertEqual(ob["cadence"], "monthly")
+
+
 if __name__ == "__main__":
     unittest.main()
