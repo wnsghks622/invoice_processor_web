@@ -200,6 +200,33 @@ class ClassifyCadence(unittest.TestCase):
         self.assertEqual(periods.classify_cadence(["2026-08"]), ("irregular", None))
         self.assertEqual(periods.classify_cadence([]), ("irregular", None))
 
+    def test_a_single_recent_gap_cannot_reclassify_a_cadence(self):
+        # Gaps 3,3,3,1 - one monthly-looking interval at the end of a clean quarterly run.
+        # TWO equal gaps are required, so this stays irregular instead of flipping to
+        # monthly on the strength of a single interval. Without this case the window could
+        # be narrowed to one gap and every other test would still pass, which would quietly
+        # undo the "a repeat, not a coincidence" rule the window exists to enforce.
+        self.assertEqual(
+            periods.classify_cadence(
+                ["2025-10", "2026-01", "2026-04", "2026-07", "2026-08"]),
+            ("irregular", None))
+
+    def test_three_month_gaps_below_the_gate_are_not_quarterly(self):
+        # Two consistent 3-month gaps, but only three observations. Quarterly suppresses
+        # instances in eight months of twelve, so it is the classification with the most to
+        # lose from being wrong and it must not be reachable below the gate.
+        self.assertEqual(
+            periods.classify_cadence(["2026-01", "2026-04", "2026-07"]),
+            ("irregular", None))
+
+    def test_duplicates_do_not_inflate_the_observation_count(self):
+        # Four rows, three distinct months: below the gate, so even-months is unreachable.
+        # Deduplication is what the gate counts, so a pair billed twice in one month must
+        # not buy its way past the evidence bar with a repeat.
+        self.assertEqual(
+            periods.classify_cadence(["2026-02", "2026-02", "2026-04", "2026-06"]),
+            ("irregular", None))
+
 
 class AppliesToPeriod(unittest.TestCase):
     def test_monthly_applies_everywhere(self):
@@ -237,6 +264,16 @@ class AppliesToPeriod(unittest.TestCase):
     def test_once_applies_everywhere_and_lets_the_window_rule_decide(self):
         # A one-off is confined by its date: rule (Task 2), not by cadence.
         self.assertTrue(periods.applies_to_period("once", None, "August 2026"))
+
+    def test_on_demand_is_recognised_whatever_its_casing_or_padding(self):
+        # cadence is a free TEXT column and Task 12 lets a human set it. A variant spelling
+        # must not fall through to the monthly default: that turns a work-order vendor into
+        # a standing monthly expectation, which is the permanent false expectation 6.1
+        # calls the one unacceptable outcome. An unset cadence still means monthly, because
+        # that is what the column's own DEFAULT says.
+        for variant in ("on-demand", "On-Demand", " ON-DEMAND ", "On-demand"):
+            self.assertFalse(
+                periods.applies_to_period(variant, None, "August 2026"), variant)
 
 
 if __name__ == "__main__":

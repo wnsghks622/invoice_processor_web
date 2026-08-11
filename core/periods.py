@@ -163,7 +163,14 @@ def applies_to_period(cadence: str, anchor: Optional[int], period: str) -> bool:
     `on-demand` never does, which is what makes a work-order vendor incapable of showing
     up as missing. Off-anchor periods for even/odd/quarterly also generate nothing, rather
     than generating an instance that would immediately read as missing.
+
+    The cadence is normalised first because the column is free TEXT that a human can edit
+    (Task 12). Every unrecognised value falls through to True, so a variant spelling of
+    `on-demand` would otherwise become a silent standing monthly expectation. Falling
+    through to True is right for a genuinely absent cadence - the column's DEFAULT is
+    'monthly' - but it must not be reachable by a typo.
     """
+    cadence = (cadence or "").strip().lower()
     if cadence == "on-demand":
         return False
     _, month = parse_period(period)
