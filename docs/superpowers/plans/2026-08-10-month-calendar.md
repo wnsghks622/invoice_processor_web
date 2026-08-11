@@ -2083,6 +2083,14 @@ class IsMissing(unittest.TestCase):
         inst = self._inst(notes="unconfirmed")
         self.assertFalse(ledger.is_missing(inst, datetime.date(2026, 8, 31)))
 
+    def test_an_instance_with_no_window_is_not_missing(self):
+        # due_to defaults to '' in the schema and an instance can be created without one -
+        # Task 1's schema tests insert exactly that shape, and instances_for_period returns
+        # it like any other row. Without the guard, date.fromisoformat('') raises ValueError
+        # and takes the entire month page down rather than skipping one row.
+        self.assertFalse(
+            ledger.is_missing(self._inst(due_to=""), datetime.date(2026, 8, 31)))
+
     def test_a_reminder_uses_its_window_with_no_slack(self):
         # You set the date yourself, so there is no learned uncertainty to allow for.
         inst = self._inst(kind="ACTION", confidence="high", due_to="2026-08-12")
@@ -2144,10 +2152,10 @@ def is_missing(instance: dict, today: datetime.date) -> bool:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_ledger -v`
-Expected: PASS, 34 tests
+Expected: PASS, 35 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 242 tests
+Expected: PASS, 243 tests
 
 - [ ] **Step 5: Commit**
 
@@ -2525,7 +2533,7 @@ Run: `python -m unittest tests.test_app -v`
 Expected: PASS
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 252 tests
+Expected: PASS, 253 tests
 
 - [ ] **Step 7: Commit**
 
@@ -2712,7 +2720,7 @@ Add `properties=db.all_properties()` to `month_page`'s `render_template(...)` ca
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 259 tests
+Expected: PASS, 260 tests
 
 - [ ] **Step 6: Commit**
 
@@ -2890,7 +2898,7 @@ In `templates/month.html`, inside the row loop's `Source` cell, append this form
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 267 tests
+Expected: PASS, 268 tests
 
 - [ ] **Step 6: Commit**
 
@@ -2972,7 +2980,7 @@ with:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 269 tests
+Expected: PASS, 270 tests
 
 - [ ] **Step 5: Update the README**
 
@@ -2997,7 +3005,7 @@ git commit -m "feat: show the parsed invoice date in the list"
 
 ## Done criteria
 
-- `python -m unittest discover -s tests -t .` passes, 269 tests.
+- `python -m unittest discover -s tests -t .` passes, 270 tests.
 - The Month page lists expected invoices and reminders grouped by property, marks late ones, and states plainly when a period is empty rather than rendering blank.
 - A reminder can be added as one-off or recurring, optionally attached to a property.
 - A vendor can be marked on-demand and then never appears as missing.
