@@ -177,8 +177,8 @@ per parent spec §5.3:
 
 | Field | Derived from |
 |---|---|
-| `due_day`, `due_spread` | median and range of day-of-month across observations |
-| `confidence` | **high**: n ≥ 3 and spread ≤ 3 · **medium**: n ≥ 3, spread ≤ 10 · **low**: otherwise |
+| `due_day`, `due_spread` | median day-of-month, and **half** the observed range — `due_spread` is a half-width, because §6.5's `learned` rule applies it as `due_day ± due_spread`. Days 4/6/8 give `due_day` 6 and `due_spread` 2, a window of exactly 4–8. |
+| `confidence` | **high**: n ≥ 3 and the full **range** ≤ 3 · **medium**: n ≥ 3, range ≤ 10 · **low**: otherwise. Confidence reads the range, not the half-width: days 2/9/5 span 7 and must read `medium`, but their half-width of 3 would read `high`. |
 | `cadence` | `monthly` or `irregular` only — see below and §6.4 |
 
 **Cadence is decided by the gaps between observations, and only recent ones count.**
