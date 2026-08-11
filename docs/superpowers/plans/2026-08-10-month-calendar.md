@@ -605,6 +605,33 @@ class ClassifyCadence(unittest.TestCase):
         self.assertEqual(periods.classify_cadence(["2026-08"]), ("irregular", None))
         self.assertEqual(periods.classify_cadence([]), ("irregular", None))
 
+    def test_a_single_recent_gap_cannot_reclassify_a_cadence(self):
+        # Gaps 3,3,3,1 - one monthly-looking interval at the end of a clean quarterly run.
+        # TWO equal gaps are required, so this stays irregular instead of flipping to
+        # monthly on the strength of a single interval. Without this case the window could
+        # be narrowed to one gap and every other test would still pass, which would quietly
+        # undo the "a repeat, not a coincidence" rule the window exists to enforce.
+        self.assertEqual(
+            periods.classify_cadence(
+                ["2025-10", "2026-01", "2026-04", "2026-07", "2026-08"]),
+            ("irregular", None))
+
+    def test_three_month_gaps_below_the_gate_are_not_quarterly(self):
+        # Two consistent 3-month gaps, but only three observations. Quarterly suppresses
+        # instances in eight months of twelve, so it is the classification with the most to
+        # lose from being wrong and it must not be reachable below the gate.
+        self.assertEqual(
+            periods.classify_cadence(["2026-01", "2026-04", "2026-07"]),
+            ("irregular", None))
+
+    def test_duplicates_do_not_inflate_the_observation_count(self):
+        # Four rows, three distinct months: below the gate, so even-months is unreachable.
+        # Deduplication is what the gate counts, so a pair billed twice in one month must
+        # not buy its way past the evidence bar with a repeat.
+        self.assertEqual(
+            periods.classify_cadence(["2026-02", "2026-02", "2026-04", "2026-06"]),
+            ("irregular", None))
+
 
 class AppliesToPeriod(unittest.TestCase):
     def test_monthly_applies_everywhere(self):
@@ -642,6 +669,16 @@ class AppliesToPeriod(unittest.TestCase):
     def test_once_applies_everywhere_and_lets_the_window_rule_decide(self):
         # A one-off is confined by its date: rule (Task 2), not by cadence.
         self.assertTrue(periods.applies_to_period("once", None, "August 2026"))
+
+    def test_on_demand_is_recognised_whatever_its_casing_or_padding(self):
+        # cadence is a free TEXT column and Task 12 lets a human set it. A variant spelling
+        # must not fall through to the monthly default: that turns a work-order vendor into
+        # a standing monthly expectation, which is the permanent false expectation 6.1
+        # calls the one unacceptable outcome. An unset cadence still means monthly, because
+        # that is what the column's own DEFAULT says.
+        for variant in ("on-demand", "On-Demand", " ON-DEMAND ", "On-demand"):
+            self.assertFalse(
+                periods.applies_to_period(variant, None, "August 2026"), variant)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -713,7 +750,14 @@ def applies_to_period(cadence: str, anchor: Optional[int], period: str) -> bool:
     `on-demand` never does, which is what makes a work-order vendor incapable of showing
     up as missing. Off-anchor periods for even/odd/quarterly also generate nothing, rather
     than generating an instance that would immediately read as missing.
+
+    The cadence is normalised first because the column is free TEXT that a human can edit
+    (Task 12). Every unrecognised value falls through to True, so a variant spelling of
+    `on-demand` would otherwise become a silent standing monthly expectation. Falling
+    through to True is right for a genuinely absent cadence - the column's DEFAULT is
+    'monthly' - but it must not be reachable by a typo.
     """
+    cadence = (cadence or "").strip().lower()
     if cadence == "on-demand":
         return False
     _, month = parse_period(period)
@@ -729,10 +773,10 @@ def applies_to_period(cadence: str, anchor: Optional[int], period: str) -> bool:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_periods -v`
-Expected: PASS, 43 tests
+Expected: PASS, 47 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 174 tests
+Expected: PASS, 178 tests
 
 - [ ] **Step 5: Verify against the live billing history**
 
@@ -992,7 +1036,7 @@ Run: `python -m unittest tests.test_ledger -v`
 Expected: PASS, 15 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 183 tests
+Expected: PASS, 187 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1155,7 +1199,7 @@ Run: `python -m unittest tests.test_ledger -v`
 Expected: PASS, 23 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 191 tests
+Expected: PASS, 195 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1170,10 +1214,17 @@ git commit -m "feat: add idempotent period rollover"
 
 **Files:**
 - Create: `core/expectations.py`
-- Test: `tests/test_expectations.py` (create)
+- Modify: `core/periods.py` (add `cadence_recently_changed`)
+- Test: `tests/test_expectations.py` (create), `tests/test_periods.py` (extend)
 
 **Interfaces:**
 - Consumes: `periods.classify_cadence` (Task 3), `db._conn_or`.
+- Produces: `periods.cadence_recently_changed(months, recent: int = 2) -> bool` — True when
+  the gaps *before* the classification window disagree with the window's own gap, i.e. the
+  pair has just shifted rhythm and the new one has not yet repeated beyond the minimum.
+  Lives in `periods.py` because it is pure month arithmetic over the same gap sequence
+  `classify_cadence` reads; it is added here rather than in Task 3 because Task 6 is its
+  only consumer and confidence is Task 6's concern.
 - Produces: `expectations.build_profiles(conn=None) -> dict[tuple[int, int], dict]` — keyed by `(property_id, vendor_id)`, each value `{"months": [...], "due_day": int, "due_spread": int, "confidence": str, "cadence": str, "anchor": int|None, "n": int}`.
 
 - [ ] **Step 1: Write the failing test**
@@ -1302,9 +1353,61 @@ class BuildProfiles(unittest.TestCase):
         profiles = expectations.build_profiles(conn=conn)
         self.assertEqual(set(profiles), {(1, 7), (2, 7)})
 
+    def test_a_freshly_changed_cadence_cannot_be_high_confidence(self):
+        # The amtech failure: a clean quarterly contract billed on the 5th every time,
+        # plus two consecutive repair invoices also on the 5th. Day spread is 0, n is 6,
+        # so the spread rule alone says "high" - and the cadence now reads monthly off
+        # two intervals. High + monthly means a 2-day slack under 6.3 and a missing-bill
+        # warning in the eight months a year this pair was never going to bill.
+        conn = make_db()
+        for iso in ("2025-10-05", "2026-01-05", "2026-04-05",
+                    "2026-07-05", "2026-08-05", "2026-09-05"):
+            add_invoice(conn, iso)
+        p = expectations.build_profiles(conn=conn)[(1, 7)]
+        self.assertEqual(p["cadence"], "monthly")
+        self.assertEqual(p["confidence"], "medium")
+
 
 if __name__ == "__main__":
     unittest.main()
+```
+
+Append to `tests/test_periods.py`, before the `if __name__` guard:
+
+```python
+class CadenceRecentlyChanged(unittest.TestCase):
+    """Confidence must not survive a change of rhythm.
+
+    classify_cadence reads two gaps, so a pair that has just shifted is classified on two
+    intervals of evidence. Day-of-month spread cannot see this - a vendor can bill on the
+    3rd every single time while changing how often it bills - so confidence has to be told
+    separately.
+    """
+
+    def test_a_steady_monthly_rhythm_has_not_changed(self):
+        self.assertFalse(periods.cadence_recently_changed(
+            ["2026-01", "2026-02", "2026-03", "2026-04"]))
+
+    def test_a_clean_quarterly_run_has_not_changed(self):
+        self.assertFalse(periods.cadence_recently_changed(
+            ["2025-10", "2026-01", "2026-04", "2026-07"]))
+
+    def test_a_shift_to_monthly_is_a_change(self):
+        # rolling greens, gaps 3,2,1,1: the monthly reading rests on the last two gaps.
+        self.assertTrue(periods.cadence_recently_changed(
+            ["2025-12", "2026-03", "2026-05", "2026-06", "2026-07"]))
+
+    def test_two_strays_beside_a_quarterly_contract_are_a_change(self):
+        # amtech (3,3,3) plus two consecutive repair invoices reads monthly. This is the
+        # case the cap exists for.
+        self.assertTrue(periods.cadence_recently_changed(
+            ["2025-10", "2026-01", "2026-04", "2026-07", "2026-08", "2026-09"]))
+
+    def test_too_little_history_to_have_changed(self):
+        # Nothing before the window to disagree with it.
+        self.assertFalse(periods.cadence_recently_changed(["2026-07", "2026-08"]))
+        self.assertFalse(periods.cadence_recently_changed(
+            ["2026-06", "2026-07", "2026-08"]))
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1314,7 +1417,34 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'core.expectations'`
 
 - [ ] **Step 3: Write minimal implementation**
 
-Create `core/expectations.py`:
+First append to `core/periods.py`:
+
+```python
+def cadence_recently_changed(months, recent: int = 2) -> bool:
+    """Has this pair's rhythm shifted inside the window that decides its cadence?
+
+    True when the gaps BEFORE the classification window disagree with the window's own
+    gap - that is, the current cadence rests on the minimum evidence and the pair used to
+    behave differently. A pair with one steady rhythm all the way back returns False and
+    keeps whatever confidence its date spread earned.
+
+    `recent` must match the value classify_cadence used, or this describes a window that
+    was not the one classified.
+    """
+    uniq = sorted({m for m in months if m})
+    if len(uniq) < 2:
+        return False
+    idx = [_month_index(m) for m in uniq]
+    gaps = [b - a for a, b in zip(idx, idx[1:])]
+    window, earlier = gaps[-recent:], gaps[:-recent]
+    if not earlier or len(set(window)) != 1:
+        # Nothing older to disagree with, or the window itself is mixed - in which case
+        # classify_cadence already returned irregular and there is no confidence to cap.
+        return False
+    return set(earlier) != set(window)
+```
+
+Then create `core/expectations.py`:
 
 ```python
 # -*- coding: utf-8 -*-
@@ -1378,6 +1508,14 @@ def build_profiles(conn=None) -> dict:
         else:
             confidence = "low"
         cadence, anchor = periods.classify_cadence(months)
+        if periods.cadence_recently_changed(months):
+            # The cadence is decided by the last two gaps, so a pair that has just shifted
+            # is classified on two intervals of evidence. Day-of-month spread does not see
+            # that - a vendor can bill on the 3rd every time while changing how OFTEN it
+            # bills - so without this a fresh shift can read "high" and buy a 2-day slack
+            # under 6.3. That is the cry-wolf direction: it flags missing in months the
+            # pair was never going to bill. Cap at medium until the new rhythm repeats.
+            confidence = "low" if confidence == "low" else "medium"
         profiles[key] = {
             "months": months,
             "n": n,
@@ -1393,15 +1531,18 @@ def build_profiles(conn=None) -> dict:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_expectations -v`
-Expected: PASS, 11 tests
+Expected: PASS, 12 tests
+
+Run: `python -m unittest tests.test_periods -v`
+Expected: PASS, 52 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 202 tests
+Expected: PASS, 212 tests
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add core/expectations.py tests/test_expectations.py
+git add core/expectations.py core/periods.py tests/test_expectations.py tests/test_periods.py
 git commit -m "feat: build recurrence profiles from invoice history"
 ```
 
@@ -1562,10 +1703,10 @@ def sync(conn=None) -> dict:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_expectations -v`
-Expected: PASS, 18 tests
+Expected: PASS, 19 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 209 tests
+Expected: PASS, 219 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1719,10 +1860,10 @@ Add `import datetime` to the imports at the top of `core/expectations.py`.
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_expectations -v`
-Expected: PASS, 25 tests
+Expected: PASS, 26 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 216 tests
+Expected: PASS, 226 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1867,7 +2008,7 @@ Run: `python -m unittest tests.test_ledger -v`
 Expected: PASS, 33 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 226 tests
+Expected: PASS, 236 tests
 
 - [ ] **Step 5: Commit**
 
@@ -2245,7 +2386,7 @@ Run: `python -m unittest tests.test_app -v`
 Expected: PASS
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 236 tests
+Expected: PASS, 246 tests
 
 - [ ] **Step 7: Commit**
 
@@ -2432,7 +2573,7 @@ Add `properties=db.all_properties()` to `month_page`'s `render_template(...)` ca
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 243 tests
+Expected: PASS, 253 tests
 
 - [ ] **Step 6: Commit**
 
@@ -2610,7 +2751,7 @@ In `templates/month.html`, inside the row loop's `Source` cell, append this form
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 251 tests
+Expected: PASS, 261 tests
 
 - [ ] **Step 6: Commit**
 
@@ -2692,7 +2833,7 @@ with:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 253 tests
+Expected: PASS, 263 tests
 
 - [ ] **Step 5: Update the README**
 
@@ -2717,7 +2858,7 @@ git commit -m "feat: show the parsed invoice date in the list"
 
 ## Done criteria
 
-- `python -m unittest discover -s tests -t .` passes, 253 tests.
+- `python -m unittest discover -s tests -t .` passes, 263 tests.
 - The Month page lists expected invoices and reminders grouped by property, marks late ones, and states plainly when a period is empty rather than rendering blank.
 - A reminder can be added as one-off or recurring, optionally attached to a property.
 - A vendor can be marked on-demand and then never appears as missing.

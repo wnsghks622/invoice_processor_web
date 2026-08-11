@@ -268,6 +268,20 @@ This is the mechanism that makes a warn-only design survivable. Flagging every n
 pair early in the month would produce a list of twenty on the 6th, most of which arrive
 later — and a list that is wrong twenty times is a list nobody reads.
 
+**Confidence is capped at `medium` for any pair whose cadence changed recently** — that is,
+when the gaps before §6.1's two-gap window disagree with the window itself. Confidence is
+otherwise earned from observation count and day-of-month spread, and neither of those can see
+a change of *frequency*: a vendor can bill on the 5th every single time while switching from
+quarterly to monthly, scoring a 0-day spread and `high` on a cadence resting on two intervals.
+
+The case that forces this is not hypothetical. `amtech elevator` is the cleanest signal in the
+dataset (gaps 3,3,3, quarterly). Two consecutive repair invoices alongside the maintenance
+contract reclassify it `monthly` — and at `high` that is a 2-day slack, producing a missing-bill
+warning in each of the eight months a year it was never going to bill. Capping at `medium`
+buys 7 days and one more real observation before the system commits. An elevator or landscaping
+vendor billing a repair next to a contract is ordinary, and this feature's whole value rests on
+its warnings being worth reading.
+
 ### 6.4 Cadence, and the on-demand case
 
 Roughly half the `(property, vendor)` pairs in the live data are not recurring at all —
@@ -292,6 +306,22 @@ meaning to a reader six months later.
 **Learning assigns these only when a pair has ≥4 observations spanning ≥4 distinct months.**
 Below that threshold there is not enough signal: a pair seen in June and August is equally
 consistent with even-months, quarterly, and two unrelated jobs.
+
+**What the gate does and does not promise.** It is a test of whether the pair has enough
+history to be predictable *at all* — it counts the whole record. It is deliberately **not** a
+test that the whole record agrees with the cadence finally assigned, because §6.1 decides
+cadence on recent gaps only. The two interact in a way worth stating outright, since it looks
+like a bug when first encountered: a pair observed in January, February, April and June
+passes the gate on four observations and is then classified `even-months` from its last three,
+so it generates nothing in odd months — including the January it demonstrably billed in.
+
+That is intended. The classification is a forward prediction, and forward from June the
+even-month rhythm is the better bet; January is the old behaviour, already past, and nothing
+extrapolates backwards. The cost is real but bounded: an off-anchor month generates no
+instance, so a bill arriving there is unwatched rather than wrongly flagged. §6.6's
+`UNCONFIRMED` marker and the manual override in §6.4.2 are what a user reaches for when the
+prediction is wrong, and confidence is capped for any pair whose rhythm changed recently
+(§6.3) so a fresh shift never buys the tightest slack.
 
 The gate **does** fire on the current history, and correctly. `amtech elevator` at
 6281-6301 Beach Blvd has billed 2025-10, 2026-01, 2026-04, 2026-07 — four observations,
