@@ -94,6 +94,33 @@ CREATE TABLE IF NOT EXISTS invoices (
     needs_review        INTEGER DEFAULT 0,
     origin              TEXT DEFAULT 'processor'
 );
+CREATE TABLE IF NOT EXISTS obligation (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind         TEXT NOT NULL,           -- EXPECT | ACTION
+    title        TEXT DEFAULT '',
+    property_id  INTEGER,                 -- nullable: portfolio-wide when NULL
+    vendor_id    INTEGER,                 -- nullable: set for EXPECT
+    window_rule  TEXT DEFAULT 'learned',  -- see core/periods.resolve_window
+    cadence      TEXT DEFAULT 'monthly',  -- monthly|even-months|odd-months|quarterly|
+                                          -- irregular|on-demand|once
+    anchor       INTEGER,                 -- nullable; parity or month%3, see periods.py
+    source       TEXT DEFAULT 'manual',   -- learned | manual
+    confidence   TEXT DEFAULT 'high',     -- high | medium | low
+    active       INTEGER DEFAULT 1,
+    notes        TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS obligation_instance (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    obligation_id INTEGER NOT NULL,
+    period        TEXT NOT NULL,          -- "August 2026", matching settings.month
+    due_from      TEXT DEFAULT '',        -- 'YYYY-MM-DD'
+    due_to        TEXT DEFAULT '',
+    state         TEXT DEFAULT 'open',    -- open | done | skipped
+    satisfied_by  TEXT DEFAULT '',        -- '' | 'tick' | 'invoice:<id>'
+    done_at       TEXT DEFAULT '',
+    note          TEXT DEFAULT '',
+    UNIQUE (obligation_id, period)
+);
 """
 
 _SCHEMA_INDEXES = """
@@ -101,6 +128,8 @@ CREATE INDEX IF NOT EXISTS idx_invoices_property   ON invoices(property);
 CREATE INDEX IF NOT EXISTS idx_invoices_stored     ON invoices(stored_file);
 CREATE INDEX IF NOT EXISTS idx_invoices_reconciled ON invoices(reconciled);
 CREATE INDEX IF NOT EXISTS idx_invoices_vendor_id  ON invoices(vendor_id);
+CREATE INDEX IF NOT EXISTS idx_instance_period ON obligation_instance(period);
+CREATE INDEX IF NOT EXISTS idx_obligation_pair ON obligation(property_id, vendor_id);
 """
 
 _SCHEMA = _SCHEMA_TABLES + _SCHEMA_INDEXES
