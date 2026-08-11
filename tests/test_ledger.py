@@ -80,5 +80,87 @@ class LedgerSchema(unittest.TestCase):
         self.assertEqual(conn.execute("SELECT active FROM obligation").fetchone()["active"], 1)
 
 
+from core import ledger
+
+
+class ObligationCrud(unittest.TestCase):
+    def test_add_returns_an_id_and_round_trips(self):
+        conn = make_db()
+        oid = ledger.add_obligation(conn=conn, kind="ACTION", title="Call Michelle",
+                                    window_rule="day:12", cadence="monthly")
+        row = ledger.get_obligation(oid, conn=conn)
+        self.assertEqual((row["kind"], row["title"], row["window_rule"], row["cadence"]),
+                         ("ACTION", "Call Michelle", "day:12", "monthly"))
+
+    def test_unknown_fields_are_ignored_rather_than_crashing(self):
+        conn = make_db()
+        oid = ledger.add_obligation(conn=conn, kind="ACTION", title="x", nonsense="y")
+        self.assertIsNotNone(ledger.get_obligation(oid, conn=conn))
+
+    def test_update_changes_only_what_is_passed(self):
+        conn = make_db()
+        oid = ledger.add_obligation(conn=conn, kind="EXPECT", title="LADWP",
+                                    cadence="monthly", source="learned")
+        ledger.update_obligation(oid, conn=conn, cadence="even-months", anchor=0)
+        row = ledger.get_obligation(oid, conn=conn)
+        self.assertEqual((row["cadence"], row["anchor"]), ("even-months", 0))
+        self.assertEqual(row["title"], "LADWP")        # untouched
+        self.assertEqual(row["source"], "learned")     # untouched
+
+    def test_get_returns_none_for_a_missing_id(self):
+        conn = make_db()
+        self.assertIsNone(ledger.get_obligation(999, conn=conn))
+
+    def test_active_obligations_excludes_inactive_ones(self):
+        conn = make_db()
+        ledger.add_obligation(conn=conn, kind="ACTION", title="live")
+        dead = ledger.add_obligation(conn=conn, kind="ACTION", title="retired")
+        ledger.update_obligation(dead, conn=conn, active=0)
+        self.assertEqual([o["title"] for o in ledger.active_obligations(conn=conn)], ["live"])
+
+
+class InstanceQueries(unittest.TestCase):
+    def _seed(self, conn):
+        oid = ledger.add_obligation(conn=conn, kind="EXPECT", title="Athens",
+                                    window_rule="day:5", cadence="monthly")
+        conn.execute(
+            "INSERT INTO obligation_instance (obligation_id, period, due_from, due_to) "
+            "VALUES (?, ?, ?, ?)", (oid, "August 2026", "2026-08-05", "2026-08-05"))
+        return oid
+
+    def test_instances_for_period_carries_the_obligation_fields(self):
+        conn = make_db()
+        oid = self._seed(conn)
+        rows = ledger.instances_for_period("August 2026", conn=conn)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["title"], "Athens")
+        self.assertEqual(rows[0]["cadence"], "monthly")
+        self.assertEqual(rows[0]["obligation_id"], oid)
+
+    def test_instances_for_period_is_scoped_to_that_period(self):
+        conn = make_db()
+        self._seed(conn)
+        self.assertEqual(ledger.instances_for_period("July 2026", conn=conn), [])
+
+    def test_set_instance_state_records_state_note_and_satisfier(self):
+        conn = make_db()
+        self._seed(conn)
+        inst = ledger.instances_for_period("August 2026", conn=conn)[0]
+        ledger.set_instance_state(inst["id"], "skipped", note="LADWP skips odd months",
+                                  satisfied_by="", conn=conn)
+        after = ledger.instances_for_period("August 2026", conn=conn)[0]
+        self.assertEqual(after["state"], "skipped")
+        self.assertEqual(after["note"], "LADWP skips odd months")
+
+    def test_marking_done_stamps_done_at(self):
+        conn = make_db()
+        self._seed(conn)
+        inst = ledger.instances_for_period("August 2026", conn=conn)[0]
+        ledger.set_instance_state(inst["id"], "done", conn=conn)
+        after = ledger.instances_for_period("August 2026", conn=conn)[0]
+        self.assertEqual(after["state"], "done")
+        self.assertTrue(after["done_at"])
+
+
 if __name__ == "__main__":
     unittest.main()
