@@ -516,7 +516,7 @@ git commit -m "feat: add period and window-rule arithmetic"
 **Interfaces:**
 - Consumes: `periods.parse_period` (Task 2).
 - Produces:
-  - `periods.classify_cadence(months: list[str], recent: int = 4) -> tuple[str, int | None]` — `months` are `"YYYY-MM"` strings, any order. Returns `(cadence, anchor)`.
+  - `periods.classify_cadence(months: list[str], recent: int = 2) -> tuple[str, int | None]` — `months` are `"YYYY-MM"` strings, any order. Returns `(cadence, anchor)`.
   - `periods.applies_to_period(cadence: str, anchor: int | None, period: str) -> bool`
   - `periods.CADENCE_GATE_OBSERVATIONS = 4`, `periods.CADENCE_GATE_SPAN_MONTHS = 4`
 
@@ -666,7 +666,7 @@ def _month_index(ym: str) -> int:
     return int(ym[:4]) * 12 + int(ym[5:7])
 
 
-def classify_cadence(months, recent: int = 4) -> Tuple[str, Optional[int]]:
+def classify_cadence(months, recent: int = 2) -> Tuple[str, Optional[int]]:
     """Classify billing cadence from the months a pair was observed in.
 
     `months` are 'YYYY-MM' strings, any order, duplicates allowed. Returns
@@ -677,6 +677,12 @@ def classify_cadence(months, recent: int = 4) -> Tuple[str, Optional[int]]:
     toward the gate and toward confidence, but a vendor that billed quarterly last year and
     monthly since is monthly now - classifying it over the whole record would call it
     irregular and delay its warning to the last week of the month.
+
+    `recent` is 2 because two equal gaps in a row are the smallest thing that is a repeat
+    rather than a coincidence, AND because a wider window would not fit the data: no live
+    pair has more than five observations, so a 4-gap window spans every pair's entire
+    history and quietly degrades into the whole-history rule this exists to replace. See
+    spec 6.1 "Why the window is two and not four".
     """
     uniq = sorted({m for m in months if m})
     if len(uniq) < 2:
@@ -751,7 +757,18 @@ for (p, v), ms in sorted(pairs.items()):
 "
 ```
 
-Expected: `amtech elevator` classifies as `('quarterly', 1)`. `rolling greens` and `mitsubishi electric` classify as `('monthly', None)` — not `irregular`. If either of those reads `irregular`, the recent-window logic is wrong.
+Expected, and all five must hold — these are the pairs spec §6.1 was written from:
+
+| pair | gaps | required |
+|---|---|---|
+| `amtech elevator` | 3,3,3 | `('quarterly', 1)` |
+| `rolling greens` | 3,2,1,1 | `('monthly', None)` |
+| `mitsubishi electric` | 2,2,1,1 | `('monthly', None)` |
+| `iktelecom` | 5,1,1 | `('monthly', None)` |
+| `cost sign` | 2,1,1 | `('monthly', None)` |
+
+If any of the four monthly pairs reads `irregular`, the recent-window logic is wrong — it has
+collapsed back into whole-history classification. Do not adjust the tests to match; report it.
 
 - [ ] **Step 6: Commit**
 

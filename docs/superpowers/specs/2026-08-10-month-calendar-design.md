@@ -183,15 +183,20 @@ per parent spec §5.3:
 
 **Cadence is decided by the gaps between observations, and only recent ones count.**
 
-Take the gaps between consecutive observations, in months. Classify on the **most recent
-four gaps** (or all of them, if there are fewer):
+Take the gaps between consecutive observations, in months. Classify on the **two most
+recent gaps** (or the single gap, if that is all there is):
 
 | Recent gaps | Cadence |
 |---|---|
-| all 1 | `monthly` |
-| all 2 | `even-months` or `odd-months`, by parity of the observed months |
-| all 3 | `quarterly` |
-| mixed | `irregular` |
+| both 1 | `monthly` |
+| both 2 | `even-months` or `odd-months`, by parity of the observed months |
+| both 3 | `quarterly` |
+| unequal | `irregular` |
+
+Two is the smallest window that can distinguish a cadence from a coincidence: one gap is a
+single interval and could be anything, while two equal gaps in a row are a repeat. A wider
+window cannot work here, because none of the live pairs has enough history for it — see
+below.
 
 Older observations still count toward `confidence` and toward `due_day` / `due_spread`.
 They just do not decide the cadence.
@@ -213,6 +218,16 @@ surfaces only in the last week — but it has billed monthly since May, and a mi
 bill found in the last week of the month is found late. On its recent gaps it reads
 `monthly` and flags on time. The rule self-corrects when a vendor shifts again, which is the
 behaviour the data actually calls for.
+
+**Why the window is two and not four.** An earlier draft of this section said "most recent
+four gaps", and it was wrong in a way worth recording, because it is invisible until you put
+real numbers through it. No live pair has more than five observations, so no live pair has
+more than four gaps — a four-gap window is therefore the *whole history* for every pair in
+the data, and the recent-window rule silently becomes the whole-history rule it was written
+to replace. `rolling greens` reads `{1,2,3}` and `mitsubishi electric` reads `{1,2}`: both
+mixed, both `irregular`, both exactly the outcome the paragraph above says must not happen.
+Four of the eight gated pairs were misclassified. The window has to be narrower than the
+shortest history it is meant to correct, and two is what fits.
 
 `irregular` remains the honest answer for genuinely erratic billing. It still generates an
 instance, but surfaces only in the last week, because flagging it on a guessed date is noise.
