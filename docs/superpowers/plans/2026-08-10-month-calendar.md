@@ -493,10 +493,10 @@ def resolve_window(rule: str, period: str,
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_periods -v`
-Expected: PASS, 20 tests
+Expected: PASS, 22 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 151 tests
+Expected: PASS, 153 tests
 
 - [ ] **Step 5: Commit**
 
@@ -723,10 +723,10 @@ def applies_to_period(cadence: str, anchor: Optional[int], period: str) -> bool:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_periods -v`
-Expected: PASS, 41 tests
+Expected: PASS, 43 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 172 tests
+Expected: PASS, 174 tests
 
 - [ ] **Step 5: Verify against the live billing history**
 
@@ -972,10 +972,10 @@ def set_instance_state(instance_id: int, state: str, note: str = "",
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_ledger -v`
-Expected: PASS, 16 tests
+Expected: PASS, 15 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 182 tests
+Expected: PASS, 183 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1135,10 +1135,10 @@ def open_period(period: str, conn=None) -> dict:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_ledger -v`
-Expected: PASS, 24 tests
+Expected: PASS, 23 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 190 tests
+Expected: PASS, 191 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1379,7 +1379,7 @@ Run: `python -m unittest tests.test_expectations -v`
 Expected: PASS, 11 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 201 tests
+Expected: PASS, 202 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1548,7 +1548,7 @@ Run: `python -m unittest tests.test_expectations -v`
 Expected: PASS, 18 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 208 tests
+Expected: PASS, 209 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1705,7 +1705,7 @@ Run: `python -m unittest tests.test_expectations -v`
 Expected: PASS, 25 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 215 tests
+Expected: PASS, 216 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1847,10 +1847,10 @@ def is_missing(instance: dict, today: datetime.date) -> bool:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest tests.test_ledger -v`
-Expected: PASS, 34 tests
+Expected: PASS, 33 tests
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 225 tests
+Expected: PASS, 226 tests
 
 - [ ] **Step 5: Commit**
 
@@ -2228,7 +2228,7 @@ Run: `python -m unittest tests.test_app -v`
 Expected: PASS
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 235 tests
+Expected: PASS, 236 tests
 
 - [ ] **Step 7: Commit**
 
@@ -2415,7 +2415,7 @@ Add `properties=db.all_properties()` to `month_page`'s `render_template(...)` ca
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 242 tests
+Expected: PASS, 243 tests
 
 - [ ] **Step 6: Commit**
 
@@ -2593,7 +2593,7 @@ In `templates/month.html`, inside the row loop's `Source` cell, append this form
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 250 tests
+Expected: PASS, 251 tests
 
 - [ ] **Step 6: Commit**
 
@@ -2675,7 +2675,7 @@ with:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 252 tests
+Expected: PASS, 253 tests
 
 - [ ] **Step 5: Update the README**
 
@@ -2700,7 +2700,7 @@ git commit -m "feat: show the parsed invoice date in the list"
 
 ## Done criteria
 
-- `python -m unittest discover -s tests -t .` passes, 252 tests.
+- `python -m unittest discover -s tests -t .` passes, 253 tests.
 - The Month page lists expected invoices and reminders grouped by property, marks late ones, and states plainly when a period is empty rather than rendering blank.
 - A reminder can be added as one-off or recurring, optionally attached to a property.
 - A vendor can be marked on-demand and then never appears as missing.
