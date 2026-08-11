@@ -181,3 +181,27 @@ def applies_to_period(cadence: str, anchor: Optional[int], period: str) -> bool:
     if cadence == "quarterly":
         return anchor is not None and month % 3 == anchor
     return True          # monthly, irregular, once
+
+
+def cadence_recently_changed(months, recent: int = 2) -> bool:
+    """Has this pair's rhythm shifted inside the window that decides its cadence?
+
+    True when the gaps BEFORE the classification window disagree with the window's own
+    gap - that is, the current cadence rests on the minimum evidence and the pair used to
+    behave differently. A pair with one steady rhythm all the way back returns False and
+    keeps whatever confidence its date spread earned.
+
+    `recent` must match the value classify_cadence used, or this describes a window that
+    was not the one classified.
+    """
+    uniq = sorted({m for m in months if m})
+    if len(uniq) < 2:
+        return False
+    idx = [_month_index(m) for m in uniq]
+    gaps = [b - a for a, b in zip(idx, idx[1:])]
+    window, earlier = gaps[-recent:], gaps[:-recent]
+    if not earlier or len(set(window)) != 1:
+        # Nothing older to disagree with, or the window itself is mixed - in which case
+        # classify_cadence already returned irregular and there is no confidence to cap.
+        return False
+    return set(earlier) != set(window)

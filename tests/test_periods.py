@@ -276,5 +276,40 @@ class AppliesToPeriod(unittest.TestCase):
                 periods.applies_to_period(variant, None, "August 2026"), variant)
 
 
+class CadenceRecentlyChanged(unittest.TestCase):
+    """Confidence must not survive a change of rhythm.
+
+    classify_cadence reads two gaps, so a pair that has just shifted is classified on two
+    intervals of evidence. Day-of-month spread cannot see this - a vendor can bill on the
+    3rd every single time while changing how often it bills - so confidence has to be told
+    separately.
+    """
+
+    def test_a_steady_monthly_rhythm_has_not_changed(self):
+        self.assertFalse(periods.cadence_recently_changed(
+            ["2026-01", "2026-02", "2026-03", "2026-04"]))
+
+    def test_a_clean_quarterly_run_has_not_changed(self):
+        self.assertFalse(periods.cadence_recently_changed(
+            ["2025-10", "2026-01", "2026-04", "2026-07"]))
+
+    def test_a_shift_to_monthly_is_a_change(self):
+        # rolling greens, gaps 3,2,1,1: the monthly reading rests on the last two gaps.
+        self.assertTrue(periods.cadence_recently_changed(
+            ["2025-12", "2026-03", "2026-05", "2026-06", "2026-07"]))
+
+    def test_two_strays_beside_a_quarterly_contract_are_a_change(self):
+        # amtech (3,3,3) plus two consecutive repair invoices reads monthly. This is the
+        # case the cap exists for.
+        self.assertTrue(periods.cadence_recently_changed(
+            ["2025-10", "2026-01", "2026-04", "2026-07", "2026-08", "2026-09"]))
+
+    def test_too_little_history_to_have_changed(self):
+        # Nothing before the window to disagree with it.
+        self.assertFalse(periods.cadence_recently_changed(["2026-07", "2026-08"]))
+        self.assertFalse(periods.cadence_recently_changed(
+            ["2026-06", "2026-07", "2026-08"]))
+
+
 if __name__ == "__main__":
     unittest.main()
