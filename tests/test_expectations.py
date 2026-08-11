@@ -260,6 +260,30 @@ class Sync(unittest.TestCase):
         self.assertEqual(after["notes"], "")
         self.assertEqual(after["confidence"], "high")     # refreshed, not frozen
 
+    def test_one_vendor_at_two_properties_stays_two_obligations(self):
+        # A vendor billing several properties is the normal case in this data, not an edge
+        # one, so `existing` has to be keyed on the PAIR. Keyed on vendor_id alone the two
+        # rows collapse, only the last is reachable, and the other property's obligation is
+        # created once and then never refreshed - it silently freezes at whatever it was on
+        # the day it was promoted. The SECOND sync is what exposes this: on the first,
+        # `existing` is empty and both pairs take the create path whatever the key is.
+        conn = make_db()
+        conn.execute("INSERT INTO properties (id, canonical_name) VALUES (2, 'Solair')")
+        for iso in ("2026-05-05", "2026-06-05"):
+            add_invoice(conn, iso, property_id=1)
+        for iso in ("2025-10-20", "2026-01-20", "2026-04-20", "2026-07-20"):
+            add_invoice(conn, iso, property_id=2)
+        expectations.sync(conn=conn)
+
+        add_invoice(conn, "2026-07-05", property_id=1)   # property 1 now n=3 and tight
+        expectations.sync(conn=conn)
+
+        by_property = {o["property_id"]: o for o in ledger.active_obligations(conn=conn)}
+        self.assertEqual(set(by_property), {1, 2})
+        self.assertEqual(by_property[1]["cadence"], "monthly")
+        self.assertEqual(by_property[1]["confidence"], "high")    # refreshed, not frozen
+        self.assertEqual(by_property[2]["cadence"], "quarterly")
+
     def test_the_obligation_carries_the_learned_window(self):
         conn = make_db()
         self._pair(conn, ["2026-05-05", "2026-06-06", "2026-07-05"])
