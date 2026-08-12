@@ -630,6 +630,63 @@ def add_reminder():
     return redirect(request.referrer or url_for("month_page"))
 
 
+VALID_CADENCES = ("monthly", "even-months", "odd-months", "quarterly",
+                  "irregular", "on-demand")
+
+
+@app.route("/month/obligation/<int:obligation_id>/edit", methods=["POST"])
+def edit_obligation(obligation_id):
+    """Change how often something is expected.
+
+    Setting a cadence by hand pins the obligation: source becomes 'manual' and the learned
+    recompute leaves it alone from then on. That is the intended path for a vendor whose
+    schedule you already know from the SOP — LADWP bills some properties on even months and
+    one on odd, and you should not have to wait for the system to infer it.
+
+    Anchors are derived, never asked for: parity for even/odd, and the viewed period's month
+    modulo 3 for quarterly, so a vendor billing February/May/August is not forced onto
+    calendar quarters.
+    """
+    from core import ledger, periods
+    cadence = (request.form.get("cadence") or "").strip()
+    if cadence not in VALID_CADENCES:
+        flash("Pick a schedule.")
+        return redirect(request.referrer or url_for("month_page"))
+    if ledger.get_obligation(obligation_id) is None:
+        flash("That item no longer exists.")
+        return redirect(url_for("month_page"))
+
+    anchor = None
+    if cadence == "even-months":
+        anchor = 0
+    elif cadence == "odd-months":
+        anchor = 1
+    elif cadence == "quarterly":
+        period = (request.form.get("period") or "").strip()
+        try:
+            _, month = periods.parse_period(period)
+        except ValueError:
+            month = datetime.date.today().month
+        anchor = month % 3
+
+    fields = {"cadence": cadence, "anchor": anchor, "source": "manual", "notes": ""}
+    ledger.update_obligation(obligation_id, **fields)
+
+    if request.form.get("everywhere"):
+        target = ledger.get_obligation(obligation_id)
+        if target and target["vendor_id"]:
+            from core import db as _db
+            with _db._connect() as conn:
+                ids = [r["id"] for r in conn.execute(
+                    "SELECT id FROM obligation WHERE vendor_id=? AND id<>?",
+                    (target["vendor_id"], obligation_id))]
+            for other in ids:
+                ledger.update_obligation(other, **fields)
+            flash(f"Applied to {len(ids)} other propert{'y' if len(ids) == 1 else 'ies'}.")
+
+    return redirect(request.referrer or url_for("month_page"))
+
+
 # =========================================================================== needs-review fixer
 
 @app.route("/fixer")

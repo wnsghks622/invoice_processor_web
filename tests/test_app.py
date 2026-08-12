@@ -785,5 +785,88 @@ class AddReminder(unittest.TestCase):
         self.assertIn('<option value="1">Kenmore Plaza</option>', html)
 
 
+class EditObligation(unittest.TestCase):
+    def setUp(self):
+        _conn.execute("DELETE FROM obligation_instance")
+        _conn.execute("DELETE FROM obligation")
+        _conn.execute("DELETE FROM vendors")
+        _conn.execute("INSERT INTO vendors (id, short_name) VALUES (7, 'LADWP')")
+        self.client = app.app.test_client()
+        from core import ledger
+        self.oid = ledger.add_obligation(kind="EXPECT", vendor_id=7, property_id=1,
+                                         window_rule="learned", cadence="monthly",
+                                         source="learned", confidence="low",
+                                         notes="unconfirmed")
+
+    def test_setting_a_cadence_pins_the_obligation(self):
+        from core import ledger
+        self.client.post(f"/month/obligation/{self.oid}/edit",
+                         data={"cadence": "even-months"})
+        ob = ledger.get_obligation(self.oid)
+        self.assertEqual(ob["cadence"], "even-months")
+        self.assertEqual(ob["source"], "manual")
+        self.assertEqual(ob["anchor"], 0)
+
+    def test_odd_months_gets_the_other_anchor(self):
+        from core import ledger
+        self.client.post(f"/month/obligation/{self.oid}/edit", data={"cadence": "odd-months"})
+        self.assertEqual(ledger.get_obligation(self.oid)["anchor"], 1)
+
+    def test_editing_clears_the_unconfirmed_marker(self):
+        from core import ledger
+        self.client.post(f"/month/obligation/{self.oid}/edit", data={"cadence": "monthly"})
+        self.assertEqual(ledger.get_obligation(self.oid)["notes"], "")
+
+    def test_marking_on_demand_stops_it_generating_instances(self):
+        from core import ledger
+        self.client.post(f"/month/obligation/{self.oid}/edit", data={"cadence": "on-demand"})
+        self.assertEqual(ledger.open_period("September 2026")["created"], 0)
+
+    def test_quarterly_requires_an_anchor_and_takes_it_from_the_period(self):
+        # TWO periods with different mod-3 anchors, because one is not enough to prove the
+        # anchor comes from the period at all. The route falls back to today's month when
+        # the period is unreadable, and 'August 2026' gives anchor 2 - which is exactly what
+        # today's month gives while this is being written. An implementation that ignored
+        # the period entirely would pass a single-period version of this test and fail here,
+        # because it cannot produce two different anchors.
+        from core import ledger
+        for period, expected in (("August 2026", 2), ("October 2026", 1)):
+            with self.subTest(period=period):
+                self.client.post(f"/month/obligation/{self.oid}/edit",
+                                 data={"cadence": "quarterly", "period": period})
+                ob = ledger.get_obligation(self.oid)
+                self.assertEqual((ob["cadence"], ob["anchor"]), ("quarterly", expected))
+
+    def test_apply_to_every_property_updates_the_vendors_other_pairs(self):
+        # A THIRD obligation under a different vendor, because "everywhere" means every
+        # property of THIS vendor and not every obligation in the database. With only one
+        # vendor in the fixture, dropping the vendor_id filter from that query is
+        # invisible - and its effect would be that marking one utility on-demand silently
+        # marks every vendor on-demand, which switches off missing detection entirely
+        # while looking like it worked.
+        from core import ledger
+        _conn.execute("INSERT INTO vendors (id, short_name) VALUES (8, 'Athens')")
+        other = ledger.add_obligation(kind="EXPECT", vendor_id=7, property_id=2,
+                                      window_rule="learned", cadence="monthly",
+                                      source="learned")
+        untouched = ledger.add_obligation(kind="EXPECT", vendor_id=8, property_id=1,
+                                          window_rule="learned", cadence="monthly",
+                                          source="learned")
+        self.client.post(f"/month/obligation/{self.oid}/edit",
+                         data={"cadence": "on-demand", "everywhere": "1"})
+        self.assertEqual(ledger.get_obligation(other)["cadence"], "on-demand")
+        self.assertEqual(ledger.get_obligation(untouched)["cadence"], "monthly")
+        self.assertEqual(ledger.get_obligation(untouched)["source"], "learned")
+
+    def test_an_unknown_cadence_is_rejected_and_writes_nothing(self):
+        from core import ledger
+        self.client.post(f"/month/obligation/{self.oid}/edit", data={"cadence": "whenever"})
+        self.assertEqual(ledger.get_obligation(self.oid)["cadence"], "monthly")
+
+    def test_a_missing_obligation_is_rejected_rather_than_crashing(self):
+        resp = self.client.post("/month/obligation/9999/edit", data={"cadence": "monthly"})
+        self.assertEqual(resp.status_code, 302)
+
+
 if __name__ == "__main__":
     unittest.main()
