@@ -2638,12 +2638,21 @@ git commit -m "feat: add the Month page with row actions"
 ## Task 11: Adding reminders
 
 **Files:**
-- Modify: `app.py`, `templates/month.html`
-- Test: `tests/test_app.py` (extend)
+- Modify: `app.py`, `templates/month.html`, `core/periods.py` (inverted-range guard)
+- Test: `tests/test_app.py` (extend), `tests/test_periods.py` (extend)
 
 **Interfaces:**
 - Consumes: `ledger.add_obligation` (Task 4), `ledger.open_period` (Task 5), `periods.parse_period` (Task 2).
 - Produces: route `POST /month/reminder`.
+
+**Carried from Task 2's review.** `resolve_window` accepts an inverted range: `day:30-1`
+returns `('2026-08-30', '2026-08-01')` and `week:4-2` returns `('2026-08-22', '2026-08-14')`.
+Both endpoints parse, so the rule passes every check that exists, and the result is a window
+no `BETWEEN` can ever match — a validly-scheduled-but-permanently-empty instance. The guard
+lands here rather than in Task 2 because this is where a rule first reaches storage from
+outside: `add_reminder` validates arbitrary POST data through `resolve_window`, and that
+validation is exactly the gate an inverted range slips through. Fix it next to the gate it
+repairs, where a route test can observe it end to end.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2710,6 +2719,26 @@ class AddReminder(unittest.TestCase):
             "period": "August 2026"})
         html = self.client.get("/month?period=August+2026").get_data(as_text=True)
         self.assertIn("Call Michelle", html)
+
+    def test_an_inverted_range_is_rejected_and_writes_nothing(self):
+        # day:30-1 parses at both ends, so it passes every check that exists and yields
+        # due_from 2026-08-30 with due_to 2026-08-01 - a window no BETWEEN can match, so
+        # the reminder is stored, scheduled, and permanently invisible. Carried from
+        # Task 2's review; the guard belongs on resolve_window, which is what this route
+        # validates through.
+        from core import ledger
+        self.client.post("/month/reminder", data={
+            "title": "x", "kind": "monthly", "window_rule": "day:30-1",
+            "period": "August 2026"})
+        self.assertEqual(ledger.active_obligations(), [])
+
+    def test_the_property_dropdown_shows_real_names(self):
+        # all_properties() returns "name", not "canonical_name", and Jinja renders an
+        # unknown attribute as the empty string instead of raising - so the wrong spelling
+        # is a dropdown of blank options with no error anywhere and every other test on
+        # this page still green.
+        html = self.client.get("/month?period=August+2026").get_data(as_text=True)
+        self.assertIn('<option value="1">Kenmore Plaza</option>', html)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2717,7 +2746,52 @@ class AddReminder(unittest.TestCase):
 Run: `python -m unittest tests.test_app -v`
 Expected: FAIL with a 404 — `/month/reminder` does not exist.
 
-- [ ] **Step 3: Add the route**
+- [ ] **Step 3: Close the inverted-range hole**
+
+In `core/periods.py`, replace the two range branches of `resolve_window` with:
+
+```python
+    m = re.fullmatch(r"day:(\d+)(?:-(\d+))?", text)
+    if m:
+        lo = int(m.group(1))
+        hi = int(m.group(2)) if m.group(2) else lo
+        if lo > hi:
+            raise ValueError(f"inverted window rule: {rule!r}")
+        return iso(lo), iso(hi)
+
+    m = re.fullmatch(r"week:(\d+)(?:-(\d+))?", text)
+    if m:
+        lo = int(m.group(1))
+        hi = int(m.group(2)) if m.group(2) else lo
+        if lo > hi:
+            raise ValueError(f"inverted window rule: {rule!r}")
+        return iso((lo - 1) * 7 + 1), iso(hi * 7)
+```
+
+`ValueError` rather than a silent swap, because a caller that wrote `day:30-1` meant
+something, and guessing which end they meant is worse than telling them. It also matches
+what every existing caller already handles: `add_reminder` catches `ValueError` from this
+function and rejects the form.
+
+Append to `tests/test_periods.py`, inside the existing `ResolveWindow` class:
+
+```python
+    def test_an_inverted_range_is_rejected(self):
+        # Both endpoints are valid days, so nothing else in the parser objects. The result
+        # would be due_from > due_to: a window no BETWEEN can match, which reads as
+        # "scheduled" everywhere while never being due.
+        for rule in ("day:30-1", "week:4-2"):
+            with self.subTest(rule=rule):
+                with self.assertRaises(ValueError):
+                    periods.resolve_window(rule, "August 2026")
+
+    def test_an_equal_range_is_still_fine(self):
+        # The guard is `lo > hi`, not `lo >= hi` - day:5-5 is a legitimate single day.
+        self.assertEqual(periods.resolve_window("day:5-5", "August 2026"),
+                         ("2026-08-05", "2026-08-05"))
+```
+
+- [ ] **Step 4: Add the route**
 
 In `app.py`, after `instance_skip`, add:
 
@@ -2774,7 +2848,7 @@ def add_reminder():
     return redirect(request.referrer or url_for("month_page"))
 ```
 
-- [ ] **Step 4: Add the form to the template**
+- [ ] **Step 5: Add the form to the template**
 
 In `templates/month.html`, immediately before the `{% if not groups %}` block, add:
 
@@ -2798,7 +2872,10 @@ In `templates/month.html`, immediately before the `{% if not groups %}` block, a
     <input type="date" name="on_date" title="for a one-off">
     <select name="property_id">
       <option value="">All properties</option>
-      {% for p in properties %}<option value="{{ p.id }}">{{ p.canonical_name }}</option>{% endfor %}
+      {# p.name, not p.canonical_name: all_properties() renames the column on the way out.
+         Jinja renders an unknown attribute as the empty string rather than raising, so the
+         wrong spelling here is a dropdown of blank options and no error anywhere. #}
+      {% for p in properties %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
     </select>
     <button class="btn primary" type="submit">Add</button>
   </form>
@@ -2808,12 +2885,12 @@ In `templates/month.html`, immediately before the `{% if not groups %}` block, a
 
 Add `properties=db.all_properties()` to `month_page`'s `render_template(...)` call.
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [ ] **Step 6: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 265 tests
+Expected: PASS, 269 tests
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add app.py templates/month.html tests/test_app.py
@@ -2989,7 +3066,7 @@ In `templates/month.html`, inside the row loop's `Source` cell, append this form
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 273 tests
+Expected: PASS, 277 tests
 
 - [ ] **Step 6: Commit**
 
@@ -3071,7 +3148,7 @@ with:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 275 tests
+Expected: PASS, 279 tests
 
 - [ ] **Step 5: Update the README**
 
@@ -3096,7 +3173,7 @@ git commit -m "feat: show the parsed invoice date in the list"
 
 ## Done criteria
 
-- `python -m unittest discover -s tests -t .` passes, 275 tests.
+- `python -m unittest discover -s tests -t .` passes, 279 tests.
 - The Month page lists expected invoices and reminders grouped by property, marks late ones, and states plainly when a period is empty rather than rendering blank.
 - A reminder can be added as one-off or recurring, optionally attached to a property.
 - A vendor can be marked on-demand and then never appears as missing.
