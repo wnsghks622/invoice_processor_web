@@ -3007,8 +3007,17 @@ class EditObligation(unittest.TestCase):
         self.assertEqual(ledger.get_obligation(self.oid)["cadence"], "monthly")
 
     def test_a_missing_obligation_is_rejected_rather_than_crashing(self):
+        # The status code alone cannot fail for the guard this test is named after: the
+        # rejection branch and the fall-through both end in a redirect, so both return 302
+        # whether or not the existence check is there. Removing the check leaves this green
+        # while the route issues a pointless UPDATE and tells the user nothing. The flash
+        # is the only observable difference, and in a test that posts only to this route it
+        # can come from nowhere else - the other emitter of that string,
+        # _instance_or_redirect, is reachable only from the instance done/skip routes.
         resp = self.client.post("/month/obligation/9999/edit", data={"cadence": "monthly"})
         self.assertEqual(resp.status_code, 302)
+        self.assertIn("no longer exists",
+                      self.client.get("/month?period=August+2026").get_data(as_text=True))
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
