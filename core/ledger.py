@@ -17,6 +17,7 @@ from . import periods
 OBLIGATION_COLUMNS = [
     "kind", "title", "property_id", "vendor_id", "window_rule",
     "cadence", "anchor", "source", "confidence", "active", "notes",
+    "due_day", "due_spread",
 ]
 
 INSTANCE_COLUMNS = [
@@ -112,7 +113,11 @@ def open_period(period: str, conn=None) -> dict:
             if not periods.applies_to_period(o["cadence"], o["anchor"], period):
                 skipped += 1
                 continue
-            window = periods.resolve_window(o["window_rule"], period)
+            # The learned timing has to be handed over here or a 'learned' rule falls back
+            # to the whole month, which pushes due_to to the month end and means a
+            # high-confidence pair cannot be flagged until after its own month has closed.
+            window = periods.resolve_window(o["window_rule"], period,
+                                            o["due_day"], o["due_spread"])
             if window is None:
                 skipped += 1
                 continue
@@ -165,5 +170,8 @@ def is_missing(instance: dict, today: datetime.date) -> bool:
 
     if slack is None:
         _, last = periods.period_bounds(instance["period"])
-        return today >= last - datetime.timedelta(days=6)
+        # The last-week rule is a FLOOR on when a loosely-known schedule may be flagged,
+        # not a replacement for being overdue: a window that opens on the 28th cannot be
+        # missing on the 25th.
+        return today >= last - datetime.timedelta(days=6) and today > due
     return today > due + datetime.timedelta(days=slack)

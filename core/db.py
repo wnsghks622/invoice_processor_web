@@ -104,6 +104,8 @@ CREATE TABLE IF NOT EXISTS obligation (
     cadence      TEXT DEFAULT 'monthly',  -- monthly|even-months|odd-months|quarterly|
                                           -- irregular|on-demand|once
     anchor       INTEGER,                 -- nullable; parity or month%3, see periods.py
+    due_day      INTEGER,                 -- learned: median day-of-month it usually bills
+    due_spread   INTEGER,                 -- learned: HALF-width, see periods.resolve_window
     source       TEXT DEFAULT 'manual',   -- learned | manual
     confidence   TEXT DEFAULT 'high',     -- high | medium | low
     active       INTEGER DEFAULT 1,
@@ -144,6 +146,8 @@ _ADDED_COLUMNS = [
     ("vendors",  "active",               "INTEGER DEFAULT 1"),
     ("invoices", "vendor_id",            "INTEGER"),
     ("invoices", "vendor_needs_review",  "INTEGER DEFAULT 0"),
+    ("obligation", "due_day",            "INTEGER"),
+    ("obligation", "due_spread",         "INTEGER"),
 ]
 
 

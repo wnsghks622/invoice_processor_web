@@ -678,12 +678,36 @@ def edit_obligation(obligation_id):
             from core import db as _db
             with _db._connect() as conn:
                 ids = [r["id"] for r in conn.execute(
-                    "SELECT id FROM obligation WHERE vendor_id=? AND id<>?",
+                    # kind='EXPECT' matters: a reminder filed against this vendor is not an
+                    # expectation, and marking the utility on-demand must not silently
+                    # switch off "call them about the meter".
+                    "SELECT id FROM obligation WHERE vendor_id=? AND id<>? "
+                    "AND kind='EXPECT'",
                     (target["vendor_id"], obligation_id))]
             for other in ids:
                 ledger.update_obligation(other, **fields)
             flash(f"Applied to {len(ids)} other propert{'y' if len(ids) == 1 else 'ies'}.")
 
+    return redirect(request.referrer or url_for("month_page"))
+
+
+@app.route("/month/obligation/<int:obligation_id>/confirm", methods=["POST"])
+def confirm_obligation(obligation_id):
+    """Say that a newly learned expectation really does recur.
+
+    Clearing the marker is all this does. It deliberately does NOT set source='manual':
+    pinning is for when you know the cadence better than the history does, and conflating
+    the two meant every confirmation also froze that pair's confidence at whatever it was
+    on promotion day. A newly promoted pair has two observations, so it is `low` - and a
+    low-confidence expectation is only ever surfaced in the last week of the month. The
+    result was that confirming an expectation made it permanently unable to warn you,
+    which is the opposite of what pressing Confirm looks like it does.
+    """
+    from core import ledger
+    if ledger.get_obligation(obligation_id) is None:
+        flash("That item no longer exists.")
+        return redirect(url_for("month_page"))
+    ledger.update_obligation(obligation_id, notes="")
     return redirect(request.referrer or url_for("month_page"))
 
 

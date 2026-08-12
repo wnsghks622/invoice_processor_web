@@ -34,6 +34,7 @@ class LedgerSchema(unittest.TestCase):
         self.assertEqual(cols, {
             "id", "kind", "title", "property_id", "vendor_id", "window_rule",
             "cadence", "anchor", "source", "confidence", "active", "notes",
+            "due_day", "due_spread",
         })
 
     def test_instance_table_has_the_expected_columns(self):
@@ -345,6 +346,16 @@ class IsMissing(unittest.TestCase):
         # the cry-wolf direction, and nothing else pins it.
         self.assertFalse(
             ledger.is_missing(self._inst(confidence=""), datetime.date(2026, 8, 10)))
+
+    def test_the_last_week_rule_still_waits_for_the_window_to_close(self):
+        # The last-week rule is a FLOOR on when a low-confidence row may be flagged, not a
+        # replacement for being overdue. A window that opens on the 28th cannot be missing
+        # on the 25th, however loosely its schedule is known - and every other last-week
+        # case here uses a window that closed early in the month, so nothing caught it.
+        inst = self._inst(confidence="low", due_from="2026-08-28", due_to="2026-08-31")
+        self.assertFalse(ledger.is_missing(inst, datetime.date(2026, 8, 25)))
+        self.assertFalse(ledger.is_missing(inst, datetime.date(2026, 8, 31)))
+        self.assertTrue(ledger.is_missing(inst, datetime.date(2026, 9, 1)))
 
     def test_a_reminder_uses_its_window_with_no_slack(self):
         # You set the date yourself, so there is no learned uncertainty to allow for.

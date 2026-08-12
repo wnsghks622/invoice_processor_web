@@ -876,6 +876,30 @@ class EditObligation(unittest.TestCase):
         self.assertIn("no longer exists",
                       self.client.get("/month?period=August+2026").get_data(as_text=True))
 
+    def test_confirming_clears_the_marker_without_pinning_the_cadence(self):
+        # Confirming says "yes, this really recurs". It must not also mean "and stop
+        # learning about it" - conflating the two is what made every confirmed row freeze
+        # at whatever confidence it had on promotion day, which for a new pair is `low`,
+        # i.e. never flagged until the last week.
+        from core import ledger
+        self.client.post(f"/month/obligation/{self.oid}/confirm")
+        ob = ledger.get_obligation(self.oid)
+        self.assertEqual(ob["notes"], "")
+        self.assertEqual(ob["source"], "learned")     # NOT pinned
+        self.assertEqual(ob["cadence"], "monthly")    # unchanged
+
+    def test_apply_everywhere_does_not_touch_reminders(self):
+        # The bulk update is scoped to a vendor, but a reminder attached to that vendor is
+        # not an expectation. Marking the utility on-demand must not silently switch off a
+        # reminder that happens to be filed against it.
+        from core import ledger
+        rem = ledger.add_obligation(kind="ACTION", title="call them", vendor_id=7,
+                                    window_rule="day:3", cadence="monthly",
+                                    source="manual")
+        self.client.post(f"/month/obligation/{self.oid}/edit",
+                         data={"cadence": "on-demand", "everywhere": "1"})
+        self.assertEqual(ledger.get_obligation(rem)["cadence"], "monthly")
+
 
 class InvoiceDateDisplay(unittest.TestCase):
     """The parse already happens; the list just never showed it. A page rendering

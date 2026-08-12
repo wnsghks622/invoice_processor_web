@@ -85,6 +85,13 @@
           {%- if r.source == 'manual' %}you added this
           {%- elif r.notes == 'unconfirmed' %}new — confirm it
           {%- else %}learned, {{ r.confidence }} confidence{% endif -%}
+          {# Confirm is separate from the cadence control on purpose: setting a cadence pins
+             the row so learning stops touching it, and confirming must not do that. #}
+          {% if r.notes == 'unconfirmed' %}
+          <form method="post" action="{{ url_for('confirm_obligation', obligation_id=r.obligation_id) }}">
+            <button class="btn" type="submit">Confirm</button>
+          </form>
+          {% endif %}
           <form method="post" action="{{ url_for('edit_obligation', obligation_id=r.obligation_id) }}">
             <input type="hidden" name="period" value="{{ period }}">
             <select name="cadence">

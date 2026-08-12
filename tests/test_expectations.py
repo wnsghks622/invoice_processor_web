@@ -388,5 +388,56 @@ class SatisfyPeriod(unittest.TestCase):
         self.assertEqual(inst["satisfied_by"], "")
 
 
+class LearnedTimingReachesTheInstance(unittest.TestCase):
+    """The seam Task 6 and Task 5 each passed on their own.
+
+    build_profiles knows the day a vendor bills; open_period decides the window an instance
+    is due in. Nothing connected them, so every learned window silently spanned the whole
+    month and the missing list never fired inside the period it belonged to. The unit test
+    for the arithmetic passed due_day by hand from the profile dict, which proved the maths
+    and left the wiring untested - so this class asserts the end-to-end path instead.
+    """
+
+    def test_a_learned_window_is_the_vendors_days_not_the_whole_month(self):
+        from core import ledger
+        conn = make_db()
+        for iso in ("2026-05-05", "2026-06-06", "2026-07-05"):
+            add_invoice(conn, iso)
+        expectations.sync(conn=conn)
+        ledger.open_period("August 2026", conn=conn)
+        inst = ledger.instances_for_period("August 2026", conn=conn)[0]
+        self.assertEqual((inst["due_from"], inst["due_to"]),
+                         ("2026-08-05", "2026-08-05"))
+
+    def test_sync_stores_the_timing_it_learned(self):
+        from core import ledger
+        conn = make_db()
+        for iso in ("2026-05-04", "2026-06-06", "2026-07-08"):
+            add_invoice(conn, iso)
+        expectations.sync(conn=conn)
+        ob = ledger.active_obligations(conn=conn)[0]
+        self.assertEqual((ob["due_day"], ob["due_spread"]), (6, 2))
+
+    def test_a_pinned_obligation_still_has_its_timing_refreshed(self):
+        # Pinning is about CADENCE. It must not freeze how well the day is known, or
+        # confirming a promotion traps the pair at low confidence for life - which is what
+        # made the shipped feature silent.
+        from core import ledger
+        conn = make_db()
+        for iso in ("2026-05-05", "2026-06-05"):
+            add_invoice(conn, iso)
+        expectations.sync(conn=conn)
+        ob = ledger.active_obligations(conn=conn)[0]
+        ledger.update_obligation(ob["id"], conn=conn, cadence="even-months",
+                                 source="manual")
+        add_invoice(conn, "2026-07-05")            # now three, tight
+        result = expectations.sync(conn=conn)
+        after = ledger.get_obligation(ob["id"], conn=conn)
+        self.assertEqual(result["pinned"], 1)
+        self.assertEqual(after["cadence"], "even-months")    # the pin holds
+        self.assertEqual(after["confidence"], "high")        # the knowledge does not freeze
+        self.assertEqual(after["due_day"], 5)
+
+
 if __name__ == "__main__":
     unittest.main()

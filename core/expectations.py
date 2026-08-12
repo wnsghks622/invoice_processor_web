@@ -108,23 +108,30 @@ def sync(conn=None) -> dict:
             existing[(r["property_id"], r["vendor_id"])] = dict(r)
 
     for key, p in profiles.items():
-        fields = {
-            "cadence": p["cadence"],
-            "anchor": p["anchor"],
-            "confidence": p["confidence"],
-        }
+        # Two groups, because a manual edit pins one of them and not the other. `shape` is
+        # how OFTEN a pair bills - that is what a human overrides when they know the
+        # schedule better than the history does. `learned` is how WELL and WHEN it is
+        # known, which no override should freeze.
+        shape = {"cadence": p["cadence"], "anchor": p["anchor"]}
+        learned = {"confidence": p["confidence"],
+                   "due_day": p["due_day"], "due_spread": p["due_spread"]}
         current = existing.get(key)
         if current is None:
             ledger.add_obligation(
                 conn=conn, kind="EXPECT", property_id=key[0], vendor_id=key[1],
                 window_rule="learned", source="learned", notes=UNCONFIRMED,
-                title="", **fields)
+                title="", **shape, **learned)
             created += 1
             continue
         if current.get("source") == "manual":
+            # Pinned means "I have told you the CADENCE". It does not mean "stop learning
+            # when this vendor bills": freezing that kept every confirmed pair at the
+            # confidence it had on promotion day, and a new pair has two observations, so
+            # it is `low` - which surfaces only in the last week, if at all.
+            ledger.update_obligation(current["id"], conn=conn, **learned)
             pinned += 1
             continue
-        ledger.update_obligation(current["id"], conn=conn, **fields)
+        ledger.update_obligation(current["id"], conn=conn, **shape, **learned)
         updated += 1
 
     return {"created": created, "updated": updated, "pinned": pinned}
