@@ -3225,9 +3225,272 @@ git commit -m "feat: show the parsed invoice date in the list"
 
 ---
 
+## Task 14: Make the missing list actually fire
+
+Found by the whole-branch review, not by any per-task review — every defect here sits in a
+hand-off between two tasks that each passed on their own. Verified against a copy of the real
+database (278 invoices, 51 learned pairs, 50 August instances): **the Month page reports zero
+possibly-missing rows on every day of the month.** That is the whole feature.
+
+Four compounding causes:
+
+1. `build_profiles` computes `due_day` and `due_spread`, `sync` never stores them, and the
+   `obligation` table has no columns for them — so `open_period` calls `resolve_window` with
+   no timing and every learned window becomes the whole month. All 50 real instances resolve
+   to `2026-08-01 .. 2026-08-31`. Task 5's own note said "Task 7 fills the profile in when it
+   syncs expectations"; Task 7 never did. The unit test passes `due_day` **by hand** from the
+   profile dict, which proves the arithmetic and leaves the wiring untested.
+2. A whole-month window pushes `due_to` to the 31st, so a high-confidence pair cannot be
+   flagged until **September 3** — after the month it belongs to has closed.
+3. The last-week branch of `is_missing` ignores `due_to` entirely, so a row whose window opens
+   on the 28th reads "possibly missing" on the 25th.
+4. `sync` stamps every new obligation `UNCONFIRMED`, which suppresses flagging outright, and
+   the only way to clear it is the cadence dropdown — which sets `source='manual'` and then
+   makes `sync` skip the row forever. A newly promoted pair has two observations, so it is
+   `low`, and confirming freezes it at `low` permanently.
+
+**Files:**
+- Modify: `core/db.py` (two columns), `core/ledger.py` (`OBLIGATION_COLUMNS`, `open_period`,
+  `is_missing`), `core/expectations.py` (`sync`), `app.py` (confirm route, `kind` filter),
+  `templates/month.html` (Confirm button)
+- Test: `tests/test_ledger.py`, `tests/test_expectations.py`, `tests/test_app.py`
+
+**Interfaces:**
+- Produces: route `POST /month/obligation/<id>/confirm`.
+- Changes: `obligation` gains `due_day INTEGER` and `due_spread INTEGER`.
+
+- [ ] **Step 1: Write the failing tests**
+
+The end-to-end one is the point of this task — it is the test whose absence let the seam
+through. Append to `tests/test_expectations.py`:
+
+```python
+class LearnedTimingReachesTheInstance(unittest.TestCase):
+    """The seam Task 6 and Task 5 each passed on their own.
+
+    build_profiles knows the day a vendor bills; open_period decides the window an instance
+    is due in. Nothing connected them, so every learned window silently spanned the whole
+    month and the missing list never fired inside the period it belonged to.
+    """
+
+    def test_a_learned_window_is_the_vendors_days_not_the_whole_month(self):
+        from core import ledger
+        conn = make_db()
+        for iso in ("2026-05-05", "2026-06-06", "2026-07-05"):
+            add_invoice(conn, iso)
+        expectations.sync(conn=conn)
+        ledger.open_period("August 2026", conn=conn)
+        inst = ledger.instances_for_period("August 2026", conn=conn)[0]
+        self.assertEqual((inst["due_from"], inst["due_to"]),
+                         ("2026-08-05", "2026-08-05"))
+
+    def test_sync_stores_the_timing_it_learned(self):
+        from core import ledger
+        conn = make_db()
+        for iso in ("2026-05-04", "2026-06-06", "2026-07-08"):
+            add_invoice(conn, iso)
+        expectations.sync(conn=conn)
+        ob = ledger.active_obligations(conn=conn)[0]
+        self.assertEqual((ob["due_day"], ob["due_spread"]), (6, 2))
+
+    def test_a_pinned_obligation_still_has_its_timing_refreshed(self):
+        # Pinning is about CADENCE. It must not freeze how well the day is known, or
+        # confirming a promotion traps the pair at low confidence for life - which is what
+        # made the shipped feature silent.
+        from core import ledger
+        conn = make_db()
+        for iso in ("2026-05-05", "2026-06-05"):
+            add_invoice(conn, iso)
+        expectations.sync(conn=conn)
+        ob = ledger.active_obligations(conn=conn)[0]
+        ledger.update_obligation(ob["id"], conn=conn, cadence="even-months",
+                                 source="manual")
+        add_invoice(conn, "2026-07-05")            # now three, tight
+        result = expectations.sync(conn=conn)
+        after = ledger.get_obligation(ob["id"], conn=conn)
+        self.assertEqual(result["pinned"], 1)
+        self.assertEqual(after["cadence"], "even-months")    # the pin holds
+        self.assertEqual(after["confidence"], "high")        # the knowledge does not freeze
+        self.assertEqual(after["due_day"], 5)
+```
+
+Append to `tests/test_ledger.py`, in the `IsMissing` class:
+
+```python
+    def test_the_last_week_rule_still_waits_for_the_window_to_close(self):
+        # The last-week rule is a FLOOR on when a low-confidence row may be flagged, not a
+        # replacement for being overdue. A window that opens on the 28th cannot be missing
+        # on the 25th, however loosely its schedule is known.
+        inst = self._inst(confidence="low", due_from="2026-08-28", due_to="2026-08-31")
+        self.assertFalse(ledger.is_missing(inst, datetime.date(2026, 8, 25)))
+        self.assertFalse(ledger.is_missing(inst, datetime.date(2026, 8, 31)))
+        self.assertTrue(ledger.is_missing(inst, datetime.date(2026, 9, 1)))
+```
+
+Append to `tests/test_app.py`, in `EditObligation`:
+
+```python
+    def test_confirming_clears_the_marker_without_pinning_the_cadence(self):
+        # Confirming says "yes, this really recurs". It must not also mean "and stop
+        # learning about it" - that is what made every confirmed row freeze at low
+        # confidence and never flag anything.
+        from core import ledger
+        self.client.post(f"/month/obligation/{self.oid}/confirm")
+        ob = ledger.get_obligation(self.oid)
+        self.assertEqual(ob["notes"], "")
+        self.assertEqual(ob["source"], "learned")     # NOT pinned
+        self.assertEqual(ob["cadence"], "monthly")    # unchanged
+
+    def test_apply_everywhere_does_not_touch_reminders(self):
+        # The bulk update is scoped to a vendor, but a reminder attached to that vendor is
+        # not an expectation. Marking the utility on-demand must not silently switch off a
+        # reminder that happens to be filed against it.
+        from core import ledger
+        rem = ledger.add_obligation(kind="ACTION", title="call them", vendor_id=7,
+                                    window_rule="day:3", cadence="monthly",
+                                    source="manual")
+        self.client.post(f"/month/obligation/{self.oid}/edit",
+                         data={"cadence": "on-demand", "everywhere": "1"})
+        self.assertEqual(ledger.get_obligation(rem)["cadence"], "monthly")
+```
+
+Update `tests/test_ledger.py`'s `test_obligation_table_has_the_expected_columns` to include
+`"due_day"` and `"due_spread"` — that assertion doing its job is the point of having it.
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `python -m unittest discover -s tests -t .`
+Expected: FAIL. The two timing tests report the whole-month window and a missing `due_day`
+key; the last-week test reports `True` where it wants `False`; both route tests 404 or find
+`source == 'manual'`.
+
+- [ ] **Step 3: Add the columns**
+
+In `core/db.py`, add to the `obligation` CREATE in `_SCHEMA_TABLES`, after `anchor`:
+
+```sql
+    due_day      INTEGER,                 -- learned: median day-of-month
+    due_spread   INTEGER,                 -- learned: half-width, see periods.resolve_window
+```
+
+and to `_ADDED_COLUMNS`, so databases that already have the table get them too:
+
+```python
+    ("obligation", "due_day",    "INTEGER"),
+    ("obligation", "due_spread", "INTEGER"),
+```
+
+- [ ] **Step 4: Carry the timing through**
+
+In `core/ledger.py`, add `"due_day", "due_spread"` to `OBLIGATION_COLUMNS`, and pass them in
+`open_period`:
+
+```python
+            window = periods.resolve_window(o["window_rule"], period,
+                                            o["due_day"], o["due_spread"])
+```
+
+In `core/expectations.py`, add them to the `fields` dict in `sync`, and change the pinned
+branch so the pin covers cadence only:
+
+```python
+        current = existing.get(key)
+        learned = {"confidence": p["confidence"],
+                   "due_day": p["due_day"], "due_spread": p["due_spread"]}
+        shape = {"cadence": p["cadence"], "anchor": p["anchor"]}
+        if current is None:
+            ledger.add_obligation(
+                conn=conn, kind="EXPECT", property_id=key[0], vendor_id=key[1],
+                window_rule="learned", source="learned", notes=UNCONFIRMED,
+                title="", **shape, **learned)
+            created += 1
+            continue
+        if current.get("source") == "manual":
+            # Pinned means "I have told you the CADENCE". It does not mean "stop learning
+            # when this vendor bills" - freezing that is what kept every confirmed pair at
+            # low confidence, and a low-confidence pair only surfaces in the last week.
+            ledger.update_obligation(current["id"], conn=conn, **learned)
+            pinned += 1
+            continue
+        ledger.update_obligation(current["id"], conn=conn, **shape, **learned)
+        updated += 1
+```
+
+- [ ] **Step 5: Make the last-week rule respect the window**
+
+In `core/ledger.py`'s `is_missing`:
+
+```python
+    if slack is None:
+        _, last = periods.period_bounds(instance["period"])
+        return today >= last - datetime.timedelta(days=6) and today > due
+```
+
+- [ ] **Step 6: Add the confirm route and button**
+
+In `app.py`, after `edit_obligation`:
+
+```python
+@app.route("/month/obligation/<int:obligation_id>/confirm", methods=["POST"])
+def confirm_obligation(obligation_id):
+    """Say that a newly learned expectation really does recur.
+
+    Clearing the marker is all this does. It deliberately does NOT set source='manual':
+    pinning is for when you know the cadence better than the history does, and conflating
+    the two meant every confirmation also froze the pair's confidence at whatever it was on
+    promotion day - which for a new pair is `low`, i.e. never flagged until the last week.
+    """
+    from core import ledger
+    if ledger.get_obligation(obligation_id) is None:
+        flash("That item no longer exists.")
+        return redirect(url_for("month_page"))
+    ledger.update_obligation(obligation_id, notes="")
+    return redirect(request.referrer or url_for("month_page"))
+```
+
+Scope the bulk update to expectations in `edit_obligation`:
+
+```python
+                    "SELECT id FROM obligation WHERE vendor_id=? AND id<>? "
+                    "AND kind='EXPECT'",
+```
+
+In `templates/month.html`, in the Source cell, before the cadence form:
+
+```html
+          {% if r.notes == 'unconfirmed' %}
+          <form method="post" action="{{ url_for('confirm_obligation', obligation_id=r.obligation_id) }}">
+            <button class="btn" type="submit">Confirm</button>
+          </form>
+          {% endif %}
+```
+
+- [ ] **Step 7: Verify against the real data**
+
+Run, read-only, against a scratch copy — never the worktree database in place. Expected:
+**many distinct windows, not one.** Before this task all 50 instances shared
+`2026-08-01..2026-08-31`. The daily counts should rise gradually across the month rather than
+sitting at 0 until the 25th and then jumping to 35 — a list that is empty for three weeks and
+then names most of the portfolio is the "wrong twenty times" failure §6.3 exists to avoid.
+Report the actual numbers; they are the evidence this task worked.
+
+- [ ] **Step 8: Run the whole suite**
+
+Run: `python -m unittest discover -s tests -t .`
+Expected: PASS, 285 tests
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add core/db.py core/ledger.py core/expectations.py app.py templates/month.html tests/
+git commit -m "fix: carry learned timing into instances so the missing list can fire"
+```
+
+---
+
 ## Done criteria
 
-- `python -m unittest discover -s tests -t .` passes, 279 tests.
+- `python -m unittest discover -s tests -t .` passes, 285 tests.
 - The Month page lists expected invoices and reminders grouped by property, marks late ones, and states plainly when a period is empty rather than rendering blank.
 - A reminder can be added as one-off or recurring, optionally attached to a property.
 - A vendor can be marked on-demand and then never appears as missing.
