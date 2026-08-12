@@ -3143,27 +3143,38 @@ class InvoiceDateDisplay(unittest.TestCase):
         _conn.execute("DELETE FROM invoices")
         self.client = app.app.test_client()
 
+    # Both tests assert the WHOLE rendered cell, not the values inside it. Every row on
+    # this page also renders an edit panel containing
+    # `<input name="invoice_date" value="{{ inv.invoice_date }}">` and a property dropdown
+    # whose first option is literally `(none / needs review)`. So assertIn("06262026") and
+    # assertIn("needs review") are both satisfied by any invoice at all, with or without
+    # this task's change - the loose versions of these tests pass against the unmodified
+    # template and prove nothing.
+
     def test_the_parsed_date_is_shown_and_the_raw_one_is_kept(self):
         _conn.execute(
             "INSERT INTO invoices (vendor_name, property, invoice_date, invoice_date_iso) "
             "VALUES ('Athens', 'Kenmore Plaza', '13-Jul-26', '2026-07-13')")
         html = self.client.get("/invoices").get_data(as_text=True)
-        self.assertIn("2026-07-13", html)
-        self.assertIn('title="13-Jul-26"', html)
+        self.assertIn('<td class="date" title="13-Jul-26">2026-07-13</td>', html)
 
     def test_an_unparsed_date_still_renders_and_is_marked(self):
         _conn.execute(
             "INSERT INTO invoices (vendor_name, property, invoice_date, invoice_date_iso) "
             "VALUES ('Athens', 'Kenmore Plaza', '06262026', '')")
         html = self.client.get("/invoices").get_data(as_text=True)
-        self.assertIn("06262026", html)
-        self.assertIn("needs review", html)
+        self.assertIn(
+            '<td class="date" title="06262026">06262026 '
+            '<span class="muted">needs review</span></td>', html)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `python -m unittest tests.test_app -v`
-Expected: FAIL — `title="13-Jul-26"` is not present; the cell renders the raw string only.
+Expected: FAIL - the cell is still `<td class="date">13-Jul-26</td>`, so neither
+asserted cell string is present. Check the failure message names the whole `<td ...>`:
+if it instead reports a bare value as missing, the assertion was written loosely and
+would have passed against the unmodified template.
 
 - [ ] **Step 3: Change the cell**
 
