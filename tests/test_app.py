@@ -549,6 +549,22 @@ class MonthPage(unittest.TestCase):
         self.assertIn("Call Michelle", html)
         self.assertIn("Kenmore Plaza", html)
 
+    def test_the_open_control_submits_the_month_chosen_in_the_dropdown(self):
+        # The period select and the Open control must live in ONE form. They used to be two
+        # - a GET form holding the select, and a separate POST form whose hidden period was
+        # whatever month was already on screen - so changing the dropdown and pressing Open
+        # submitted the OLD month, and the page came back on that month looking untouched.
+        #
+        # No route test can see this. month_open was always correct; it opened exactly the
+        # period it was handed. Only the markup was wrong, so only the markup can be
+        # asserted - hence reading the form out of the rendered page.
+        import re
+        html = self.client.get("/month?period=August+2026").get_data(as_text=True)
+        forms = re.findall(r"<form\b.*?</form>", html, re.S)
+        picker = [f for f in forms if '<select name="period"' in f]
+        self.assertEqual(len(picker), 1, "expected exactly one month-picker form")
+        self.assertIn('formaction="/month/open"', picker[0])
+
     def test_open_period_creates_instances_and_redirects(self):
         from core import ledger
         ledger.add_obligation(kind="ACTION", title="Rent posting", window_rule="last-week",
