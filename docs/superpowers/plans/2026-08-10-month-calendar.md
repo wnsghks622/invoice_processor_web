@@ -2347,7 +2347,11 @@ def month_page():
     expectations.satisfy_period(period)
 
     today = datetime.date.today()
-    prop_names = {p["id"]: p["canonical_name"] for p in db.all_properties()}
+    # all_properties() renames the column on the way out: it returns
+    # {"id", "name", "code", "aliases"}, so p["canonical_name"] is a KeyError here even
+    # though canonical_name IS the column name in the table and in all_vendors()' output.
+    # app.py:391 already reads p["name"].
+    prop_names = {p["id"]: p["name"] for p in db.all_properties()}
     vendor_names = {v["id"]: (v.get("canonical_name") or v["short_name"])
                     for v in db.all_vendors()}
 
