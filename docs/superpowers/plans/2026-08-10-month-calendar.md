@@ -2675,6 +2675,14 @@ class AddReminder(unittest.TestCase):
         self.assertEqual(len(ledger.instances_for_period("August 2026")), 1)
         ledger.open_period("September 2026")
         self.assertEqual(len(ledger.instances_for_period("September 2026")), 0)
+        # The instance counts above are governed entirely by the date: window rule -
+        # resolve_window returns None outside August - so they hold whether cadence was
+        # stored as "once" or "monthly". applies_to_period returns True for both. Pin the
+        # stored value directly, because Task 12 lets a human edit cadence and needs a
+        # correct starting point to edit from.
+        ob = ledger.active_obligations()[0]
+        self.assertEqual(ob["cadence"], "once")
+        self.assertEqual(ob["window_rule"], "date:2026-08-18")
 
     def test_a_recurring_reminder_appears_in_later_months_too(self):
         from core import ledger
@@ -2714,11 +2722,17 @@ class AddReminder(unittest.TestCase):
 
     def test_a_new_reminder_is_visible_in_the_current_period_immediately(self):
         # Adding something and not seeing it would read as the save having failed.
+        #
+        # Assert the rendered ROW, not the bare title. The route also flashes
+        # "Added: Call Michelle", and base.html echoes flashes on the next GET - so a bare
+        # assertIn("Call Michelle") passes even when open_period is skipped and the
+        # reminder is genuinely absent from the table. The flash proves the POST was
+        # accepted; only the <td> proves the reminder is on the page.
         self.client.post("/month/reminder", data={
             "title": "Call Michelle", "kind": "monthly", "window_rule": "day:12",
             "period": "August 2026"})
         html = self.client.get("/month?period=August+2026").get_data(as_text=True)
-        self.assertIn("Call Michelle", html)
+        self.assertIn("<td>Call Michelle</td>", html)
 
     def test_an_inverted_range_is_rejected_and_writes_nothing(self):
         # day:30-1 parses at both ends, so it passes every check that exists and yields
@@ -2893,7 +2907,7 @@ Expected: PASS, 269 tests
 - [ ] **Step 7: Commit**
 
 ```bash
-git add app.py templates/month.html tests/test_app.py
+git add app.py core/periods.py templates/month.html tests/test_app.py tests/test_periods.py
 git commit -m "feat: add reminders, one-off and recurring"
 ```
 
