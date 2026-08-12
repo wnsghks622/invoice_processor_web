@@ -93,12 +93,16 @@ def resolve_window(rule: str, period: str,
     if m:
         lo = int(m.group(1))
         hi = int(m.group(2)) if m.group(2) else lo
+        if lo > hi:
+            raise ValueError(f"inverted window rule: {rule!r}")
         return iso(lo), iso(hi)
 
     m = re.fullmatch(r"week:(\d+)(?:-(\d+))?", text)
     if m:
         lo = int(m.group(1))
         hi = int(m.group(2)) if m.group(2) else lo
+        if lo > hi:
+            raise ValueError(f"inverted window rule: {rule!r}")
         return iso((lo - 1) * 7 + 1), iso(hi * 7)
 
     raise ValueError(f"unknown window rule: {rule!r}")

@@ -119,6 +119,20 @@ class ResolveWindow(unittest.TestCase):
         with self.assertRaises(ValueError):
             periods.resolve_window("phase-of-moon", "August 2026")
 
+    def test_an_inverted_range_is_rejected(self):
+        # Both endpoints are valid days, so nothing else in the parser objects. The result
+        # would be due_from > due_to: a window no BETWEEN can match, which reads as
+        # "scheduled" everywhere while never being due.
+        for rule in ("day:30-1", "week:4-2"):
+            with self.subTest(rule=rule):
+                with self.assertRaises(ValueError):
+                    periods.resolve_window(rule, "August 2026")
+
+    def test_an_equal_range_is_still_fine(self):
+        # The guard is `lo > hi`, not `lo >= hi` - day:5-5 is a legitimate single day.
+        self.assertEqual(periods.resolve_window("day:5-5", "August 2026"),
+                         ("2026-08-05", "2026-08-05"))
+
 
 class ClassifyCadence(unittest.TestCase):
     """Cadence comes from the gaps between observations, and only recent ones decide it.

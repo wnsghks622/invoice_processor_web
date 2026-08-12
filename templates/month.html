@@ -26,6 +26,35 @@
   </form>
 </section>
 
+<section class="panel">
+  <div class="panel-head"><div class="panel-title">Add a reminder</div></div>
+  <form method="post" action="{{ url_for('add_reminder') }}">
+    <input type="hidden" name="period" value="{{ period }}">
+    <input type="text" name="title" placeholder="What do you need to remember?" required>
+    <select name="kind">
+      <option value="monthly">Every month</option>
+      <option value="once">Just once</option>
+    </select>
+    <select name="window_rule">
+      <option value="day:1">1st</option>
+      <option value="week:2">2nd week</option>
+      <option value="week:3">3rd week</option>
+      <option value="last-week">Last week</option>
+      <option value="month-end">Month end</option>
+    </select>
+    <input type="date" name="on_date" title="for a one-off">
+    <select name="property_id">
+      <option value="">All properties</option>
+      {# p.name, not p.canonical_name: all_properties() renames the column on the way out.
+         Jinja renders an unknown attribute as the empty string rather than raising, so the
+         wrong spelling here is a dropdown of blank options and no error anywhere. #}
+      {% for p in properties %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+    </select>
+    <button class="btn primary" type="submit">Add</button>
+  </form>
+  <p class="muted">Pick a date for a one-off; the schedule dropdown is used for monthly ones.</p>
+</section>
+
 {% if not groups %}
 <section class="panel">
   <p class="muted">

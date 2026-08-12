@@ -502,6 +502,7 @@ def month_page():
                            period=period,
                            groups=sorted(groups.items()),
                            months=state.month_options(),
+                           properties=db.all_properties(),
                            missing_count=sum(1 for g in groups.values()
                                              for i in g if i["missing"]))
 
@@ -574,6 +575,58 @@ def instance_skip(instance_id):
     if _instance_or_redirect(instance_id) is None:
         return redirect(url_for("month_page"))
     ledger.set_instance_state(instance_id, "skipped", note=note, satisfied_by="")
+    return redirect(request.referrer or url_for("month_page"))
+
+
+@app.route("/month/reminder", methods=["POST"])
+def add_reminder():
+    """Create a reminder — a manual obligation.
+
+    Validated fully before anything is written: a rejected reminder must leave the ledger
+    untouched. A one-off carries an absolute date rule, which is what confines it to a
+    single period without any active-flag bookkeeping.
+    """
+    from core import ledger, periods
+    title = (request.form.get("title") or "").strip()
+    kind = (request.form.get("kind") or "monthly").strip()
+    period = (request.form.get("period") or "").strip()
+
+    if not title:
+        flash("Give the reminder a title.")
+        return redirect(request.referrer or url_for("month_page"))
+
+    if kind == "once":
+        on_date = (request.form.get("on_date") or "").strip()
+        try:
+            datetime.date.fromisoformat(on_date)
+        except ValueError:
+            flash("Pick a date for a one-off reminder.")
+            return redirect(request.referrer or url_for("month_page"))
+        window_rule, cadence = f"date:{on_date}", "once"
+    else:
+        window_rule, cadence = (request.form.get("window_rule") or "").strip(), "monthly"
+        try:
+            periods.resolve_window(window_rule, period or "August 2026")
+        except ValueError:
+            flash(f"Could not read '{window_rule}' as a schedule.")
+            return redirect(request.referrer or url_for("month_page"))
+
+    prop = (request.form.get("property_id") or "").strip()
+    vend = (request.form.get("vendor_id") or "").strip()
+
+    ledger.add_obligation(
+        kind="ACTION", title=title, window_rule=window_rule, cadence=cadence,
+        source="manual", confidence="high",
+        property_id=int(prop) if prop.isdecimal() else None,
+        vendor_id=int(vend) if vend.isdecimal() else None)
+
+    if period:
+        try:
+            periods.parse_period(period)
+            ledger.open_period(period)     # so it shows up straight away
+        except ValueError:
+            pass
+    flash(f"Added: {title}")
     return redirect(request.referrer or url_for("month_page"))
 
 

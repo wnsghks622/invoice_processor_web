@@ -689,5 +689,87 @@ class InstanceActions(unittest.TestCase):
                       self.client.get("/month?period=August+2026").get_data(as_text=True))
 
 
+class AddReminder(unittest.TestCase):
+    def setUp(self):
+        _conn.execute("DELETE FROM obligation_instance")
+        _conn.execute("DELETE FROM obligation")
+        _conn.execute("DELETE FROM properties")
+        _conn.execute("INSERT INTO properties (id, canonical_name) VALUES (1, 'Kenmore Plaza')")
+        self.client = app.app.test_client()
+
+    def test_a_one_off_reminder_lands_in_one_month_only(self):
+        from core import ledger
+        self.client.post("/month/reminder", data={
+            "title": "Check the Namwoo distribution", "kind": "once",
+            "on_date": "2026-08-18", "period": "August 2026"})
+        self.assertEqual(len(ledger.instances_for_period("August 2026")), 1)
+        ledger.open_period("September 2026")
+        self.assertEqual(len(ledger.instances_for_period("September 2026")), 0)
+
+    def test_a_recurring_reminder_appears_in_later_months_too(self):
+        from core import ledger
+        self.client.post("/month/reminder", data={
+            "title": "Post next month's rent", "kind": "monthly",
+            "window_rule": "last-week", "period": "August 2026"})
+        ledger.open_period("September 2026")
+        self.assertEqual(len(ledger.instances_for_period("September 2026")), 1)
+
+    def test_a_reminder_can_be_attached_to_a_property(self):
+        from core import ledger
+        self.client.post("/month/reminder", data={
+            "title": "Ask James for invoices", "kind": "monthly",
+            "window_rule": "day:1", "property_id": "1", "period": "August 2026"})
+        ob = ledger.active_obligations()[0]
+        self.assertEqual(ob["property_id"], 1)
+
+    def test_an_empty_title_is_rejected_and_writes_nothing(self):
+        from core import ledger
+        self.client.post("/month/reminder", data={
+            "title": "   ", "kind": "monthly", "window_rule": "day:1",
+            "period": "August 2026"})
+        self.assertEqual(ledger.active_obligations(), [])
+
+    def test_a_one_off_without_a_date_is_rejected_and_writes_nothing(self):
+        from core import ledger
+        self.client.post("/month/reminder", data={
+            "title": "x", "kind": "once", "on_date": "", "period": "August 2026"})
+        self.assertEqual(ledger.active_obligations(), [])
+
+    def test_an_unparseable_window_rule_is_rejected_and_writes_nothing(self):
+        from core import ledger
+        self.client.post("/month/reminder", data={
+            "title": "x", "kind": "monthly", "window_rule": "phase-of-moon",
+            "period": "August 2026"})
+        self.assertEqual(ledger.active_obligations(), [])
+
+    def test_a_new_reminder_is_visible_in_the_current_period_immediately(self):
+        # Adding something and not seeing it would read as the save having failed.
+        self.client.post("/month/reminder", data={
+            "title": "Call Michelle", "kind": "monthly", "window_rule": "day:12",
+            "period": "August 2026"})
+        html = self.client.get("/month?period=August+2026").get_data(as_text=True)
+        self.assertIn("Call Michelle", html)
+
+    def test_an_inverted_range_is_rejected_and_writes_nothing(self):
+        # day:30-1 parses at both ends, so it passes every check that exists and yields
+        # due_from 2026-08-30 with due_to 2026-08-01 - a window no BETWEEN can match, so
+        # the reminder is stored, scheduled, and permanently invisible. Carried from
+        # Task 2's review; the guard belongs on resolve_window, which is what this route
+        # validates through.
+        from core import ledger
+        self.client.post("/month/reminder", data={
+            "title": "x", "kind": "monthly", "window_rule": "day:30-1",
+            "period": "August 2026"})
+        self.assertEqual(ledger.active_obligations(), [])
+
+    def test_the_property_dropdown_shows_real_names(self):
+        # all_properties() returns "name", not "canonical_name", and Jinja renders an
+        # unknown attribute as the empty string instead of raising - so the wrong spelling
+        # is a dropdown of blank options with no error anywhere and every other test on
+        # this page still green.
+        html = self.client.get("/month?period=August+2026").get_data(as_text=True)
+        self.assertIn('<option value="1">Kenmore Plaza</option>', html)
+
+
 if __name__ == "__main__":
     unittest.main()
