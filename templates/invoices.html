@@ -113,7 +113,16 @@
       <td>{% if inv.property %}{{ inv.property }}{% else %}<span class="prop-none">—</span>{% endif %}</td>
       <td class="num">{% if inv.amount is not none %}${{ '%.2f'|format(inv.amount) }}{% else %}{{ inv.amount_text }}{% endif %}</td>
       <td class="mono">{% if inv.check_number %}{{ inv.check_number }}{% else %}<span class="check-none">—</span>{% endif %}</td>
-      <td class="date">{{ inv.invoice_date }}</td>
+      {# The parsed date is what every calculation uses, so it is what the list shows.
+         The raw string the vendor printed stays one hover away, so provenance is never
+         lost - and an unparsed date is called out rather than shown as an empty cell. #}
+      <td class="date" title="{{ inv.invoice_date }}">
+        {%- if inv.invoice_date_iso -%}
+          {{ inv.invoice_date_iso }}
+        {%- else -%}
+          {{ inv.invoice_date }} <span class="muted">needs review</span>
+        {%- endif -%}
+      </td>
       <td class="date soft">{{ inv.date_processed }}</td>
       <td>
         {% if inv.status == 'DUPLICATE' %}

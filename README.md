@@ -165,6 +165,12 @@ read by Claude, filed into `data/processed/<property>/`, and logged. Output stre
 Tick **Yardi** as you key each one in (saves instantly). Click a vendor name to open its PDF. The
 edit panel fixes any field; changing the property moves the filed PDF too.
 
+**Month** — everything expected in one month, grouped by property: invoices that normally
+arrive and haven't yet, plus reminders you've written for yourself. Expectations are learned
+from your own billing history, so a vendor that bills on the 5th is flagged around the 7th
+while one that wanders across the month stays quiet until the last week. Vendors that bill
+only when work is done can be marked **on-demand** and are never flagged.
+
 **Needs Review** — one page, three separate queues, each flagging a different problem:
 - **Property didn't match** — the service location didn't match any property. Click the vendor to
   read the PDF, then assign the right property. The lasting fix is adding that address as an alias.

@@ -877,5 +877,38 @@ class EditObligation(unittest.TestCase):
                       self.client.get("/month?period=August+2026").get_data(as_text=True))
 
 
+class InvoiceDateDisplay(unittest.TestCase):
+    """The parse already happens; the list just never showed it. A page rendering
+    '2026-06-03 00:00:00' beside 'Jun 2, 2026' beside '6/11/26' is unreadable."""
+
+    def setUp(self):
+        _conn.execute("DELETE FROM invoices")
+        self.client = app.app.test_client()
+
+    # Both tests assert the WHOLE rendered cell, not the values inside it. Every row on
+    # this page also renders an edit panel containing
+    # `<input name="invoice_date" value="{{ inv.invoice_date }}">` and a property dropdown
+    # whose first option is literally `(none / needs review)`. So assertIn("06262026") and
+    # assertIn("needs review") are both satisfied by any invoice at all, with or without
+    # this task's change - the loose versions of these tests pass against the unmodified
+    # template and prove nothing.
+
+    def test_the_parsed_date_is_shown_and_the_raw_one_is_kept(self):
+        _conn.execute(
+            "INSERT INTO invoices (vendor_name, property, invoice_date, invoice_date_iso) "
+            "VALUES ('Athens', 'Kenmore Plaza', '13-Jul-26', '2026-07-13')")
+        html = self.client.get("/invoices").get_data(as_text=True)
+        self.assertIn('<td class="date" title="13-Jul-26">2026-07-13</td>', html)
+
+    def test_an_unparsed_date_still_renders_and_is_marked(self):
+        _conn.execute(
+            "INSERT INTO invoices (vendor_name, property, invoice_date, invoice_date_iso) "
+            "VALUES ('Athens', 'Kenmore Plaza', '06262026', '')")
+        html = self.client.get("/invoices").get_data(as_text=True)
+        self.assertIn(
+            '<td class="date" title="06262026">06262026 '
+            '<span class="muted">needs review</span></td>', html)
+
+
 if __name__ == "__main__":
     unittest.main()
