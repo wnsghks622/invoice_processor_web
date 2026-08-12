@@ -2209,6 +2209,12 @@ class MonthPage(unittest.TestCase):
         _conn.execute("DELETE FROM obligation_instance")
         _conn.execute("DELETE FROM obligation")
         _conn.execute("DELETE FROM properties")
+        # Invoices and vendors too: /month/open runs expectations.sync(), so any invoice
+        # history left behind by another test in this class becomes an extra learned
+        # obligation and an extra instance. Two tests here seed invoices deliberately, and
+        # without this the ones that count instances depend on alphabetical test order.
+        _conn.execute("DELETE FROM invoices")
+        _conn.execute("DELETE FROM vendors")
         _conn.execute("INSERT INTO properties (id, canonical_name) VALUES (1, 'Kenmore Plaza')")
         self.client = app.app.test_client()
 
@@ -2266,6 +2272,49 @@ class MonthPage(unittest.TestCase):
         kinds = [o["kind"] for o in ledger.active_obligations()]
         self.assertIn("EXPECT", kinds)
         self.assertEqual(len(ledger.instances_for_period("August 2026")), 1)
+
+    def test_an_overdue_row_is_marked_possibly_missing(self):
+        # is_missing is covered thoroughly as a function in test_ledger, but nothing
+        # checked that this page CALLS it or renders what it returns - the seam between
+        # the two, rather than either side. Suppressing the flag entirely leaves every
+        # other test on this page green.
+        #
+        # day:1 is due 2026-08-01 and this is an ACTION, so it is overdue for any today
+        # after that date and the case cannot go stale.
+        from core import ledger
+        ledger.add_obligation(kind="ACTION", title="Rent posting", property_id=1,
+                              window_rule="day:1", cadence="monthly")
+        ledger.open_period("August 2026")
+        html = self.client.get("/month?period=August+2026").get_data(as_text=True)
+        # Two separate renderings of the same flag: the row's own status cell and the
+        # header tally. Asserting the bare phrase would not distinguish them, because the
+        # header reads "1 possibly missing" and would satisfy it on its own.
+        self.assertIn("<strong>possibly missing</strong>", html)
+        self.assertIn("1 possibly missing", html)
+        self.assertNotIn("nothing overdue", html)
+
+    def test_a_get_satisfies_an_expectation_whose_invoice_has_arrived(self):
+        # The route writes on GET deliberately, so an invoice processed since you last
+        # looked shows as arrived without pressing anything. That is the justification in
+        # month_page's docstring, and nothing exercised it through the route - removing the
+        # satisfy_period call left the whole suite green.
+        from core import ledger
+        _conn.execute("DELETE FROM invoices")
+        _conn.execute("DELETE FROM vendors")
+        _conn.execute("INSERT INTO vendors (id, short_name) VALUES (7, 'Athens')")
+        for iso in ("2026-06-05", "2026-07-05", "2026-08-05"):
+            _conn.execute(
+                "INSERT INTO invoices (property, vendor_id, invoice_date, invoice_date_iso) "
+                "VALUES ('Kenmore Plaza', 7, ?, ?)", (iso, iso))
+
+        self.client.post("/month/open", data={"period": "August 2026"})
+        self.assertEqual(
+            ledger.instances_for_period("August 2026")[0]["state"], "open")
+
+        self.client.get("/month?period=August+2026")
+        after = ledger.instances_for_period("August 2026")[0]
+        self.assertEqual(after["state"], "done")
+        self.assertTrue(after["satisfied_by"].startswith("invoice:"))
 ```
 
 ```python
@@ -2279,6 +2328,18 @@ class InstanceActions(unittest.TestCase):
                               window_rule="day:12", cadence="monthly")
         ledger.open_period("August 2026")
         self.inst = ledger.instances_for_period("August 2026")[0]
+
+    def test_a_closed_row_stops_counting_towards_the_missing_tally(self):
+        # The other direction of the missing flag. Asserting only that an overdue row says
+        # "possibly missing" leaves a page that marks EVERYTHING missing looking correct,
+        # so this pins that a closed row is not counted. It reads the header tally rather
+        # than the row, because the row's status cell shows "done" ahead of the missing
+        # branch and would hide the difference. Date-independent: is_missing returns False
+        # on state alone, whatever today is.
+        self.client.post(f"/month/instance/{self.inst['id']}/done")
+        html = self.client.get("/month?period=August+2026").get_data(as_text=True)
+        self.assertIn("nothing overdue", html)
+        self.assertNotIn("possibly missing", html)
 
     def test_done_marks_the_instance_and_stamps_the_date(self):
         from core import ledger
@@ -2303,10 +2364,16 @@ class InstanceActions(unittest.TestCase):
         self.assertEqual(after["state"], "open")
 
     def test_acting_on_a_missing_instance_is_rejected_and_writes_nothing(self):
+        # "Writes nothing" is the weaker half of this: UPDATE ... WHERE id=9999 matches no
+        # rows whatever the lookup returned, so SQLite gives that for free even if the
+        # lookup fabricated a row. The flash is the only thing that distinguishes
+        # "rejected" from "silently did nothing", so it is asserted too.
         from core import ledger
         resp = self.client.post("/month/instance/9999/done")
         self.assertEqual(resp.status_code, 302)
         self.assertEqual(len(ledger.instances_for_period("August 2026")), 1)
+        self.assertIn("no longer exists",
+                      self.client.get("/month?period=August+2026").get_data(as_text=True))
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2557,7 +2624,7 @@ Run: `python -m unittest tests.test_app -v`
 Expected: PASS
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 255 tests
+Expected: PASS, 258 tests
 
 - [ ] **Step 7: Commit**
 
@@ -2744,7 +2811,7 @@ Add `properties=db.all_properties()` to `month_page`'s `render_template(...)` ca
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 262 tests
+Expected: PASS, 265 tests
 
 - [ ] **Step 6: Commit**
 
@@ -2922,7 +2989,7 @@ In `templates/month.html`, inside the row loop's `Source` cell, append this form
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 270 tests
+Expected: PASS, 273 tests
 
 - [ ] **Step 6: Commit**
 
@@ -3004,7 +3071,7 @@ with:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `python -m unittest discover -s tests -t .`
-Expected: PASS, 272 tests
+Expected: PASS, 275 tests
 
 - [ ] **Step 5: Update the README**
 
@@ -3029,7 +3096,7 @@ git commit -m "feat: show the parsed invoice date in the list"
 
 ## Done criteria
 
-- `python -m unittest discover -s tests -t .` passes, 272 tests.
+- `python -m unittest discover -s tests -t .` passes, 275 tests.
 - The Month page lists expected invoices and reminders grouped by property, marks late ones, and states plainly when a period is empty rather than rendering blank.
 - A reminder can be added as one-off or recurring, optionally attached to a property.
 - A vendor can be marked on-demand and then never appears as missing.
