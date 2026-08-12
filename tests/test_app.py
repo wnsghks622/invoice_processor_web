@@ -518,5 +518,109 @@ class EditInvoiceRoute(unittest.TestCase):
         self.assertEqual(row["vendor_needs_review"], 0)
 
 
+class MonthPage(unittest.TestCase):
+    """The Month page groups instances by property and marks the late ones."""
+
+    def setUp(self):
+        _conn.execute("DELETE FROM obligation_instance")
+        _conn.execute("DELETE FROM obligation")
+        _conn.execute("DELETE FROM properties")
+        _conn.execute("INSERT INTO properties (id, canonical_name) VALUES (1, 'Kenmore Plaza')")
+        self.client = app.app.test_client()
+
+    def test_empty_period_says_so_rather_than_rendering_blank(self):
+        # A blank page reads as "nothing is missing", which is the opposite of the truth
+        # when the ledger has simply never been populated.
+        html = self.client.get("/month?period=August+2026").get_data(as_text=True)
+        self.assertIn("Nothing scheduled", html)
+
+    def test_lists_an_instance_under_its_property(self):
+        from core import ledger
+        ledger.add_obligation(kind="ACTION", title="Call Michelle", property_id=1,
+                              window_rule="day:12", cadence="monthly")
+        ledger.open_period("August 2026")
+        html = self.client.get("/month?period=August+2026").get_data(as_text=True)
+        self.assertIn("Call Michelle", html)
+        self.assertIn("Kenmore Plaza", html)
+
+    def test_open_period_creates_instances_and_redirects(self):
+        from core import ledger
+        ledger.add_obligation(kind="ACTION", title="Rent posting", window_rule="last-week",
+                              cadence="monthly")
+        resp = self.client.post("/month/open", data={"period": "August 2026"})
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(len(ledger.instances_for_period("August 2026")), 1)
+
+    def test_open_period_twice_does_not_duplicate(self):
+        from core import ledger
+        ledger.add_obligation(kind="ACTION", title="Rent posting", window_rule="last-week",
+                              cadence="monthly")
+        self.client.post("/month/open", data={"period": "August 2026"})
+        self.client.post("/month/open", data={"period": "August 2026"})
+        self.assertEqual(len(ledger.instances_for_period("August 2026")), 1)
+
+    def test_a_bad_period_is_rejected_rather_than_crashing(self):
+        resp = self.client.get("/month?period=not-a-month", follow_redirects=True)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Could not read", resp.get_data(as_text=True))
+
+    def test_opening_a_period_also_learns_expectations(self):
+        # Without this, sync() is built and tested but never runs in the app, and no
+        # expectation is ever learned no matter how much history accumulates.
+        from core import ledger
+        _conn.execute("DELETE FROM invoices")
+        _conn.execute("DELETE FROM vendors")
+        _conn.execute("INSERT INTO vendors (id, short_name) VALUES (7, 'Athens')")
+        for iso in ("2026-06-05", "2026-07-05"):
+            _conn.execute(
+                "INSERT INTO invoices (property, vendor_id, invoice_date, invoice_date_iso) "
+                "VALUES ('Kenmore Plaza', 7, ?, ?)", (iso, iso))
+
+        self.client.post("/month/open", data={"period": "August 2026"})
+        kinds = [o["kind"] for o in ledger.active_obligations()]
+        self.assertIn("EXPECT", kinds)
+        self.assertEqual(len(ledger.instances_for_period("August 2026")), 1)
+
+
+class InstanceActions(unittest.TestCase):
+    def setUp(self):
+        _conn.execute("DELETE FROM obligation_instance")
+        _conn.execute("DELETE FROM obligation")
+        self.client = app.app.test_client()
+        from core import ledger
+        ledger.add_obligation(kind="ACTION", title="Call Michelle",
+                              window_rule="day:12", cadence="monthly")
+        ledger.open_period("August 2026")
+        self.inst = ledger.instances_for_period("August 2026")[0]
+
+    def test_done_marks_the_instance_and_stamps_the_date(self):
+        from core import ledger
+        self.client.post(f"/month/instance/{self.inst['id']}/done")
+        after = ledger.instances_for_period("August 2026")[0]
+        self.assertEqual(after["state"], "done")
+        self.assertTrue(after["done_at"])
+
+    def test_skip_records_the_reason(self):
+        from core import ledger
+        self.client.post(f"/month/instance/{self.inst['id']}/skip",
+                         data={"note": "LADWP skips odd months"})
+        after = ledger.instances_for_period("August 2026")[0]
+        self.assertEqual(after["state"], "skipped")
+        self.assertEqual(after["note"], "LADWP skips odd months")
+
+    def test_skip_without_a_reason_is_rejected_and_writes_nothing(self):
+        # A dismissal with no reason is indistinguishable from a mis-click six months later.
+        from core import ledger
+        self.client.post(f"/month/instance/{self.inst['id']}/skip", data={"note": "  "})
+        after = ledger.instances_for_period("August 2026")[0]
+        self.assertEqual(after["state"], "open")
+
+    def test_acting_on_a_missing_instance_is_rejected_and_writes_nothing(self):
+        from core import ledger
+        resp = self.client.post("/month/instance/9999/done")
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(len(ledger.instances_for_period("August 2026")), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

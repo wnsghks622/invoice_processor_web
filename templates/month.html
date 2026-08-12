@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}{{ period }} — Invoice Processor{% endblock %}
+{% block page_title %}{{ period }}{% endblock %}
+{% block page_subtitle %}What's expected this month, and what hasn't turned up{% endblock %}
+{% block content %}
+<div class="page">
+
+<section class="panel">
+  <div class="panel-head">
+    <div class="panel-title">Month</div>
+    <div class="panel-note">
+      {% if missing_count %}{{ missing_count }} possibly missing{% else %}nothing overdue{% endif %}
+    </div>
+  </div>
+  <form method="get" action="{{ url_for('month_page') }}" class="inline-form">
+    <select name="period">
+      {% for m in months %}
+        <option value="{{ m }}" {% if m == period %}selected{% endif %}>{{ m }}</option>
+      {% endfor %}
+    </select>
+    <button class="btn" type="submit">View</button>
+  </form>
+  <form method="post" action="{{ url_for('month_open') }}" class="inline-form">
+    <input type="hidden" name="period" value="{{ period }}">
+    <button class="btn" type="submit">Open {{ period }}</button>
+  </form>
+</section>
+
+{% if not groups %}
+<section class="panel">
+  <p class="muted">
+    Nothing scheduled for {{ period }}. Either the month hasn't been opened yet — use
+    <strong>Open {{ period }}</strong> above — or no expectations have been learned. Learned
+    expectations need <code>vendor_id</code> and <code>invoice_date_iso</code> populated; see
+    the backfill steps in the README.
+  </p>
+</section>
+{% endif %}
+
+{% for group, rows in groups %}
+<section class="panel">
+  <div class="panel-head">
+    <div class="panel-title">{{ group }}</div>
+    <div class="panel-note">{{ rows|length }} item{{ '' if rows|length == 1 else 's' }}</div>
+  </div>
+  <table class="props">
+    <thead>
+      <tr><th>What</th><th>Window</th><th>Source</th><th>Status</th><th></th></tr>
+    </thead>
+    <tbody>
+    {% for r in rows %}
+      <tr class="{% if r.missing %}attn{% elif r.state != 'open' %}dim{% endif %}">
+        <td>{{ r.label }}</td>
+        <td class="date">{{ r.due_from }}{% if r.due_to != r.due_from %} – {{ r.due_to }}{% endif %}</td>
+        <td>
+          {%- if r.source == 'manual' %}you added this
+          {%- elif r.notes == 'unconfirmed' %}new — confirm it
+          {%- else %}learned, {{ r.confidence }} confidence{% endif -%}
+        </td>
+        <td>
+          {%- if r.satisfied_by.startswith('invoice:') %}arrived
+          {%- elif r.state == 'done' %}done {{ r.done_at }}
+          {%- elif r.state == 'skipped' %}skipped — {{ r.note }}
+          {%- elif r.missing %}<strong>possibly missing</strong>
+          {%- else %}not yet due{% endif -%}
+        </td>
+        <td>
+          {% if r.state == 'open' %}
+          <form method="post" action="{{ url_for('instance_done', instance_id=r.id) }}">
+            <button class="btn" type="submit">Done</button>
+          </form>
+          <form method="post" action="{{ url_for('instance_skip', instance_id=r.id) }}">
+            <input type="text" name="note" placeholder="why?" required>
+            <button class="btn" type="submit">Skip</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endfor %}
+
+</div>
+{% endblock %}

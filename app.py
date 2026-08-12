@@ -453,6 +453,130 @@ def delete_vendor(vendor_id):
     return redirect(url_for("vendors_page"))
 
 
+# =========================================================================== month calendar
+
+@app.route("/month")
+def month_page():
+    """Everything due in one period, grouped by property.
+
+    Reads a period from the query string so you can look back at a closed month; falls back
+    to the configured period.
+
+    Satisfaction runs on every render, so an invoice processed since you last looked shows
+    as arrived without you having to press anything. That does mean a GET writes, which is
+    normally worth avoiding - it is a deliberate call here. The app is single-user on
+    127.0.0.1, _reject_cross_site already refuses requests that did not come from its own
+    pages, and satisfy_period is idempotent, so a repeated or prefetched request changes
+    nothing. The alternative - only syncing on an explicit button - leaves the page showing
+    an invoice as missing hours after it was processed, which is the kind of stale screen
+    that stops being trusted.
+    """
+    from core import expectations, ledger, periods
+    settings = state.load_settings()
+    period = (request.args.get("period") or settings["month"]).strip()
+    try:
+        periods.parse_period(period)
+    except ValueError:
+        flash(f"Could not read '{period}' as a month.")
+        return redirect(url_for("month_page"))
+
+    expectations.satisfy_period(period)
+
+    today = datetime.date.today()
+    # all_properties() renames the column on the way out: it returns
+    # {"id", "name", "code", "aliases"}, so p["canonical_name"] is a KeyError here even
+    # though canonical_name IS the column name in the table and in all_vendors()' output.
+    # app.py:391 already reads p["name"].
+    prop_names = {p["id"]: p["name"] for p in db.all_properties()}
+    vendor_names = {v["id"]: (v.get("canonical_name") or v["short_name"])
+                    for v in db.all_vendors()}
+
+    groups = {}
+    for inst in ledger.instances_for_period(period):
+        inst["missing"] = ledger.is_missing(inst, today)
+        inst["label"] = inst["title"] or vendor_names.get(inst["vendor_id"], "(vendor)")
+        group = prop_names.get(inst["property_id"], "All properties")
+        groups.setdefault(group, []).append(inst)
+
+    return render_template("month.html",
+                           period=period,
+                           groups=sorted(groups.items()),
+                           months=state.month_options(),
+                           missing_count=sum(1 for g in groups.values()
+                                             for i in g if i["missing"]))
+
+
+@app.route("/month/open", methods=["POST"])
+def month_open():
+    """Materialize a period. Idempotent, so pressing it twice is harmless.
+
+    Learning runs first, then rollover. Order matters: expectations.sync creates or
+    refreshes the EXPECT obligations from current invoice history, and open_period turns
+    obligations into instances — so syncing second would leave a newly learned expectation
+    with no instance until the next time you opened a month.
+
+    This is the only place recompute is triggered in this scope. Spec section 8 also lists
+    a vendor merge and an explicit Recompute action; both belong with the Expected page,
+    which is not part of this plan.
+    """
+    from core import expectations, ledger, periods
+    period = (request.form.get("period") or "").strip()
+    try:
+        periods.parse_period(period)
+    except ValueError:
+        flash("Pick a month to open.")
+        return redirect(url_for("month_page"))
+    learned = expectations.sync()
+    result = ledger.open_period(period)
+    flash(f"Opened {period}: {result['created']} new, {result['existing']} already there. "
+          f"Learned {learned['created']} new expectation"
+          f"{'' if learned['created'] == 1 else 's'}.")
+    return redirect(url_for("month_page", period=period))
+
+
+def _instance_or_redirect(instance_id):
+    """Look an instance up, or flash and hand back None. Both row actions need this, and
+    acting on a deleted row must not 500."""
+    from core import db as _db
+    with _db._connect() as conn:
+        row = conn.execute("SELECT * FROM obligation_instance WHERE id=?",
+                           (instance_id,)).fetchone()
+    if row is None:
+        flash("That item no longer exists.")
+        return None
+    return dict(row)
+
+
+@app.route("/month/instance/<int:instance_id>/done", methods=["POST"])
+def instance_done(instance_id):
+    """Tick a row off by hand. Expected invoices normally close themselves when the invoice
+    lands; this is for reminders and for the cases evidence cannot see."""
+    from core import ledger
+    if _instance_or_redirect(instance_id) is None:
+        return redirect(url_for("month_page"))
+    ledger.set_instance_state(instance_id, "done")
+    return redirect(request.referrer or url_for("month_page"))
+
+
+@app.route("/month/instance/<int:instance_id>/skip", methods=["POST"])
+def instance_skip(instance_id):
+    """Dismiss a row for this period, with a reason.
+
+    The reason is required. A silent dismissal is indistinguishable from a mis-click when
+    you come back to the month later, and the whole value of a dismissal is that it tells
+    the next reader why the gap was fine.
+    """
+    from core import ledger
+    note = (request.form.get("note") or "").strip()
+    if not note:
+        flash("Say why you're skipping it — that note is the whole point.")
+        return redirect(request.referrer or url_for("month_page"))
+    if _instance_or_redirect(instance_id) is None:
+        return redirect(url_for("month_page"))
+    ledger.set_instance_state(instance_id, "skipped", note=note, satisfied_by="")
+    return redirect(request.referrer or url_for("month_page"))
+
+
 # =========================================================================== needs-review fixer
 
 @app.route("/fixer")
