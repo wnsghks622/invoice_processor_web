@@ -28,7 +28,7 @@ Usage:
     python3 bankrec.py --batch "<parent folder>" [...]
 """
 
-import os, re, io, sys, csv, argparse, datetime, logging
+import os, re, io, sys, csv, argparse, calendar, datetime, logging
 
 from pypdf import PdfReader, PdfWriter
 
@@ -441,7 +441,8 @@ def parse_statement(paths):
 class Doc:
     __slots__ = ("path", "is_slip", "fname_ints", "fname_moneys", "content_amounts",
                  "slip_total", "slip_date", "deposit_no", "doc_date", "vendor_keys",
-                 "ocr_used", "verified", "sidecar_total", "check_numbers")
+                 "ocr_used", "verified", "sidecar_total", "check_numbers",
+                 "lag_months")
 
 def file_number_tokens(path):
     name = os.path.splitext(os.path.basename(path))[0]
@@ -476,7 +477,10 @@ def load_amount_sidecar(folder):
      "date": datetime|None}}.
     Several rows for one file (a multi-bill PDF) merge into one amount set; `total` is their
     sum. `checks` holds any check numbers the user typed in (the strongest match signal for a
-    cleared check). A file with neither a usable amount nor a check is omitted. {} if absent."""
+    cleared check). `lag` is the whole months between when this vendor bills and the month its
+    bills actually clear, learned from reconciliation history and written beside the amount; a
+    sidecar from before that column existed reads 0. A file with neither a usable amount nor a
+    check is omitted. {} if absent."""
     path = os.path.join(folder, SIDECAR_NAME)
     if not os.path.exists(path):
         return {}
@@ -487,7 +491,8 @@ def load_amount_sidecar(folder):
                 key = (row.get("stored_file") or "").strip().lower()
                 if not key:
                     continue
-                slot = out.setdefault(key, {"amounts": set(), "_list": [], "checks": set(), "date": None})
+                slot = out.setdefault(key, {"amounts": set(), "_list": [], "checks": set(),
+                                            "date": None, "lag": 0})
                 raw = (row.get("amount") or "").strip().replace(",", "").replace("$", "")
                 try:
                     amt = round(abs(float(raw)), 2)
@@ -497,6 +502,10 @@ def load_amount_sidecar(folder):
                 chk = re.sub(r"\D", "", row.get("check_number") or "")
                 if chk:
                     slot["checks"].add(int(chk))
+                try:                                   # absent, blank or junk -> no lag
+                    slot["lag"] = max(0, int(str(row.get("payment_lag_months") or "0").strip() or 0))
+                except ValueError:
+                    slot["lag"] = 0
                 idate = _parse_mdy(row.get("invoice_date"))
                 if idate and (slot["date"] is None or idate > slot["date"]):
                     slot["date"] = idate
@@ -556,6 +565,7 @@ def profile_support(paths, ocr_mode, sidecar=None):
         d.slip_date = slip_date(text) if d.is_slip else None
         d.deposit_no = deposit_number(text) if d.is_slip else None
         d.doc_date = _doc_period_date(p, sc)
+        d.lag_months = int(sc.get("lag") or 0) if sc else 0   # absent on a pre-column sidecar
         d.vendor_keys = vendor_keys(text) | vendor_keys(os.path.basename(p))
         docs.append(d)
     return docs
@@ -612,6 +622,15 @@ def _doc_total(d):
     pos = [x for x in d.content_amounts if x > 0]
     return round(max(pos), 2) if pos else None
 
+def _add_months(d, n):
+    """`d` moved n whole months on, clamped to the last valid day (Jan 31 + 1 -> Feb 28)."""
+    if not n:
+        return d
+    m = d.month - 1 + n
+    year, month = d.year + m // 12, m % 12 + 1
+    return d.replace(year=year, month=month,
+                     day=min(d.day, calendar.monthrange(year, month)[1]))
+
 def _placement_rank(item):
     """Sort key for the greedy placement passes: strongest evidence first, then - among docs
     that tie on evidence - the one whose own date sits nearest the statement line's date, then
@@ -624,7 +643,11 @@ def _placement_rank(item):
     if d.doc_date and sl.date:
         ld = to_date(sl.date)
         if ld is not datetime.datetime.max:
-            gap = abs((d.doc_date - ld).days)
+            # Compare when the bill is DRAFTED, not when it was issued. A vendor that bills
+            # at the end of July and is autopaid mid-August (lag 1) charges the same amount
+            # every month, so nothing but the date can say which of its invoices a line is -
+            # and unshifted, the date names the wrong one.
+            gap = abs((_add_months(d.doc_date, d.lag_months) - ld).days)
     return (-sc, gap, not d.verified, d.path)
 
 def score_doc_line(d, sl):

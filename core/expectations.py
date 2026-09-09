@@ -81,6 +81,53 @@ def build_profiles(conn=None) -> dict:
     return profiles
 
 
+
+def payment_lag_months(conn=None) -> dict:
+    """(property_id, vendor_id) -> whole months between when a pair bills and the month its
+    invoices actually clear in. Only pairs that really run late are returned; a pair that
+    clears in its own month is absent, which reads the same as a lag of zero.
+
+    Some bills are drafted a month after they are issued - Spectrum mails at the end of July
+    and autopay takes it in mid-August - and where such a vendor charges the SAME amount every
+    month, amount and vendor evidence cannot say which of two invoices a bank line belongs to.
+    The gap between invoice_date_iso and `reconciled` already records the answer, one row per
+    bill that has been through a rec, so it is read rather than configured.
+
+    Same two rules as build_profiles: group on vendor_id, and read invoice_date_iso rather
+    than date_processed. MIN_MONTHS distinct billing months are required before a gap counts
+    as a schedule instead of a coincidence, and a negative gap - reconciled before the invoice
+    was even dated - is a data error rather than a rhythm, so it is dropped.
+    """
+    with db._conn_or(conn) as c:
+        by_name = _property_ids(c)
+        rows = c.execute(
+            "SELECT property, vendor_id, invoice_date_iso, reconciled FROM invoices "
+            "WHERE vendor_id IS NOT NULL AND COALESCE(invoice_date_iso,'') <> '' "
+            "AND COALESCE(reconciled,'') <> ''"
+        ).fetchall()
+
+    seen = collections.defaultdict(list)
+    for r in rows:
+        pid = by_name.get(r["property"])
+        if pid is None:
+            continue                      # a property that is not in the canonical list
+        try:
+            year, month = periods.parse_period(r["reconciled"])
+        except ValueError:
+            continue                      # not a period string - nothing to measure against
+        iso = r["invoice_date_iso"]
+        billed = int(iso[:4]) * 12 + int(iso[5:7])
+        seen[(pid, r["vendor_id"])].append((iso[:7], year * 12 + month - billed))
+
+    lags = {}
+    for key, pairs in seen.items():
+        if len({ym for ym, _gap in pairs}) < MIN_MONTHS:
+            continue
+        lag = int(statistics.median([gap for _ym, gap in pairs]))
+        if lag >= 1:
+            lags[key] = lag
+    return lags
+
 # Marker on a freshly-promoted obligation, until you say whether it is really recurring.
 # Task 9 excludes anything carrying it from being flagged missing.
 UNCONFIRMED = "unconfirmed"

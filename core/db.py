@@ -587,19 +587,27 @@ def file_status() -> tuple[set, set]:
 
 def export_amount_sidecars(processed_root: Path = None) -> int:
     """
-    Refresh processed/<property>/_amounts.csv for the PENDING pool - byte-compatible with the
-    old xlsx exporter (same SIDECAR_HEADER), so bankrec.py / stage_month.py are unaffected.
+    Refresh processed/<property>/_amounts.csv for the PENDING pool, in SIDECAR_HEADER order so
+    bankrec.py / stage_month.py can read it by column name.
+
+    Each row also carries its pair's payment_lag_months - the whole months between when that
+    vendor bills and the month its bills actually clear. bankrec never opens the database, so
+    this exporter is where a learned lag crosses over to it.
     A property whose pool is now empty gets a header-only sidecar so cleared files stop being
     re-staged. Returns the number of sidecars written with pending rows.
     """
+    from . import expectations              # local import: expectations imports this module
     processed_root = Path(processed_root or config.PROCESSED)
     with _connect() as conn:
         rows = conn.execute(
             "SELECT stored_file, amount, amount_text, vendor_name, invoice_number, unit, "
-            "invoice_date, property, source_file, check_number FROM invoices "
+            "invoice_date, property, source_file, check_number, vendor_id FROM invoices "
             "WHERE status!='DUPLICATE' AND COALESCE(reconciled,'')='' "
             "AND COALESCE(stored_file,'')!='' AND COALESCE(property,'')!=''"
         ).fetchall()
+        property_ids = {r["canonical_name"]: r["id"]
+                        for r in conn.execute("SELECT id, canonical_name FROM properties")}
+        lags = expectations.payment_lag_months(conn)
 
     import re
     by_safe: dict[str, list] = {}
@@ -615,6 +623,10 @@ def export_amount_sidecars(processed_root: Path = None) -> int:
             "property":       str(r["property"] or "").strip(),
             "source_file":    str(r["source_file"] or "").strip(),
             "check_number":   re.sub(r"[^0-9]", "", str(r["check_number"] or "")),
+            # Blank rather than 0 for the ordinary case, so the column only speaks up when a
+            # pair really does clear a month or more after it bills.
+            "payment_lag_months": str(lags.get(
+                (property_ids.get(str(r["property"] or "").strip()), r["vendor_id"]), "")),
         })
 
     written, refreshed = 0, set()

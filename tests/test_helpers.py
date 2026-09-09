@@ -10,6 +10,7 @@ Run from the project root:
 import datetime
 import os
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -274,6 +275,7 @@ def _mk_invoice(path, amount, doc_date, vendor_text="", verified=True):
     d.verified = verified
     d.sidecar_total = amount if verified else None
     d.check_numbers = set()
+    d.lag_months = 0
     return d
 
 
@@ -392,6 +394,74 @@ class SettlementMemberBinding(unittest.TestCase):
         doc_line, reason, _c, _cov = bankrec.assign_docs(
             [lone], [self.SETTLE], txns=txns, period_end=datetime.datetime(2026, 8, 31))
         self.assertIn("rec-fallback", reason[lone.path])
+
+
+class SidecarPaymentLag(unittest.TestCase):
+    """The lag is learned from the database, but bankrec never opens the database - it reads
+    the folder and _amounts.csv. So the lag rides in as a sidecar column, and a sidecar
+    written before the column existed simply reads as no lag."""
+
+    HEADER = ("stored_file,amount,vendor,invoice_number,unit,invoice_date,property,"
+              "source_file,check_number")
+
+    def _sidecar(self, *rows, column=True):
+        head = self.HEADER + (",payment_lag_months" if column else "")
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "_amounts.csv").write_text("\n".join((head,) + rows) + "\n",
+                                                    encoding="utf-8")
+            return bankrec.load_amount_sidecar(tmp)
+
+    def test_lag_column_is_read(self):
+        sc = self._sidecar(
+            "Spectrum_07_2026.pdf,140.00,Spectrum,07302026,,07/30/2026,P,s.pdf,,1")
+        self.assertEqual(sc["spectrum_07_2026.pdf"]["lag"], 1)
+
+    def test_sidecar_written_before_the_column_existed_reads_as_no_lag(self):
+        sc = self._sidecar(
+            "Spectrum_07_2026.pdf,140.00,Spectrum,07302026,,07/30/2026,P,s.pdf,",
+            column=False)
+        self.assertEqual(sc["spectrum_07_2026.pdf"]["lag"], 0)
+
+    def test_blank_or_unreadable_lag_reads_as_no_lag(self):
+        sc = self._sidecar(
+            "A_07_2026.pdf,10.00,A,1,,07/30/2026,P,s.pdf,,",
+            "B_07_2026.pdf,20.00,B,2,,07/30/2026,P,s.pdf,,later")
+        self.assertEqual(sc["a_07_2026.pdf"]["lag"], 0)
+        self.assertEqual(sc["b_07_2026.pdf"]["lag"], 0)
+
+
+class LaggedPlacement(unittest.TestCase):
+    """Spectrum bills $140.00 at the end of every month and autopay takes it in the middle of
+    the NEXT one. Three invoices of the same amount score identically, so the date decides -
+    and the date that matters is when the bill is drafted, not when it was issued."""
+
+    LINE = bankrec.StmtLine(1, 140.00, "debit", "other_debit", "08/19/2026",
+                            "08/19/2026 SPECTRUM SPECTRUM 0596250 $140.00",
+                            None, False, pos=100)
+
+    def _place(self, docs):
+        doc_line, _reason, _conf, _covered = bankrec.assign_docs(
+            docs, [self.LINE], period_end=datetime.datetime(2026, 8, 31))
+        return sorted(os.path.basename(p) for p in doc_line)
+
+    def _spectrums(self, lag):
+        out = []
+        for name, billed in (("Spectrum_06_2026.pdf", datetime.datetime(2026, 6, 30)),
+                             ("Spectrum_07_2026.pdf", datetime.datetime(2026, 7, 30)),
+                             ("Spectrum_08_2026.pdf", datetime.datetime(2026, 8, 30))):
+            d = _mk_invoice("/x/" + name, 140.00, billed, vendor_text="Spectrum")
+            d.lag_months = lag
+            out.append(d)
+        return out
+
+    def test_a_one_month_lag_picks_the_invoice_billed_the_month_before(self):
+        self.assertEqual(self._place(self._spectrums(1)), ["Spectrum_07_2026.pdf"])
+
+    def test_without_a_lag_the_nearest_invoice_still_wins(self):
+        self.assertEqual(self._place(self._spectrums(0)), ["Spectrum_08_2026.pdf"])
+
+    def test_the_lag_reorders_and_never_places_a_second_file(self):
+        self.assertEqual(len(self._place(self._spectrums(1))), 1)
 
 
 class MonthDirSort(unittest.TestCase):

@@ -11,14 +11,18 @@ Run from the project root:
 
     python -m unittest discover -s tests -t . -v
 """
+import csv
 import sqlite3
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core import db, expectations, periods
+from core import processor as ip
 
 
 def make_db():
@@ -437,6 +441,118 @@ class LearnedTimingReachesTheInstance(unittest.TestCase):
         self.assertEqual(after["cadence"], "even-months")    # the pin holds
         self.assertEqual(after["confidence"], "high")        # the knowledge does not freeze
         self.assertEqual(after["due_day"], 5)
+
+
+
+def add_reconciled(conn, iso, reconciled, property_id=1, vendor_id=7):
+    """An invoice that has been through a rec: billed on `iso`, cleared in `reconciled`."""
+    name = conn.execute("SELECT canonical_name FROM properties WHERE id=?",
+                        (property_id,)).fetchone()["canonical_name"]
+    conn.execute(
+        "INSERT INTO invoices (property, vendor_id, invoice_date, invoice_date_iso, "
+        "reconciled) VALUES (?, ?, ?, ?, ?)", (name, vendor_id, iso, iso, reconciled))
+
+
+class PaymentLagMonths(unittest.TestCase):
+    """Some bills are drafted a month after they are issued - Spectrum mails at the end of
+    July and autopay takes it mid-August. The gap between invoice_date_iso and the month the
+    invoice was reconciled in already records that, one row per cleared bill."""
+
+    def test_a_pair_that_always_clears_next_month_reads_as_lag_one(self):
+        conn = make_db()
+        add_reconciled(conn, "2026-05-30", "June 2026")
+        add_reconciled(conn, "2026-06-30", "July 2026")
+        self.assertEqual(expectations.payment_lag_months(conn=conn), {(1, 7): 1})
+
+    def test_a_pair_that_clears_in_its_own_month_has_no_lag(self):
+        conn = make_db()
+        add_reconciled(conn, "2026-05-04", "May 2026")
+        add_reconciled(conn, "2026-06-04", "June 2026")
+        self.assertEqual(expectations.payment_lag_months(conn=conn), {})
+
+    def test_one_cleared_month_is_not_enough_to_trust(self):
+        conn = make_db()
+        add_reconciled(conn, "2026-05-30", "June 2026")
+        self.assertEqual(expectations.payment_lag_months(conn=conn), {})
+
+    def test_the_median_decides_when_one_month_ran_late(self):
+        conn = make_db()
+        add_reconciled(conn, "2026-04-30", "May 2026")
+        add_reconciled(conn, "2026-05-30", "June 2026")
+        add_reconciled(conn, "2026-06-30", "August 2026")      # one straggler
+        self.assertEqual(expectations.payment_lag_months(conn=conn), {(1, 7): 1})
+
+    def test_unreconciled_and_undated_rows_are_ignored(self):
+        conn = make_db()
+        add_reconciled(conn, "2026-05-30", "June 2026")
+        add_reconciled(conn, "2026-06-30", "July 2026")
+        add_invoice(conn, "2026-07-30")                        # pending, no reconciled month
+        conn.execute("INSERT INTO invoices (property, vendor_id, reconciled) "
+                     "VALUES ('Kenmore Plaza', 7, 'August 2026')")   # no invoice_date_iso
+        self.assertEqual(expectations.payment_lag_months(conn=conn), {(1, 7): 1})
+
+    def test_an_unparseable_reconciled_month_is_skipped_not_fatal(self):
+        conn = make_db()
+        add_reconciled(conn, "2026-05-30", "June 2026")
+        add_reconciled(conn, "2026-06-30", "July 2026")
+        add_reconciled(conn, "2026-07-30", "whenever")
+        self.assertEqual(expectations.payment_lag_months(conn=conn), {(1, 7): 1})
+
+    def test_a_negative_gap_is_not_a_lag(self):
+        """A bill reconciled BEFORE its own invoice date is a data error, not a schedule."""
+        conn = make_db()
+        add_reconciled(conn, "2026-06-30", "May 2026")
+        add_reconciled(conn, "2026-07-30", "June 2026")
+        self.assertEqual(expectations.payment_lag_months(conn=conn), {})
+
+class LagReachesTheSidecar(unittest.TestCase):
+    """bankrec never opens the database, so a learned lag is only useful once the sidecar
+    carries it. The exporter is the seam: it already has the connection open."""
+
+    def _export(self, conn):
+        conn.execute("UPDATE invoices SET status='OK' WHERE status IS NULL")
+        tmp = tempfile.mkdtemp()
+        folder = Path(tmp) / ip._safe_folder_name("Kenmore Plaza")
+        folder.mkdir(parents=True)
+        with mock.patch.object(db, "_connect", lambda: conn):
+            db.export_amount_sidecars(Path(tmp))
+        with (folder / ip.SIDECAR_NAME).open(newline="", encoding="utf-8-sig") as fh:
+            return {r["stored_file"]: r for r in csv.DictReader(fh)}
+
+    def _pending(self, conn, stored_file, iso):
+        conn.execute(
+            "INSERT INTO invoices (property, vendor_id, vendor_name, stored_file, amount, "
+            "invoice_date, invoice_date_iso) "
+            "VALUES ('Kenmore Plaza', 7, 'Athens', ?, 140.0, ?, ?)", (stored_file, iso, iso))
+
+    def test_a_lagging_pair_writes_its_months_beside_the_amount(self):
+        conn = make_db()
+        add_reconciled(conn, "2026-05-30", "June 2026")
+        add_reconciled(conn, "2026-06-30", "July 2026")
+        self._pending(conn, "Athens_07_2026.pdf", "2026-07-30")
+        rows = self._export(conn)
+        self.assertEqual(rows["Athens_07_2026.pdf"]["payment_lag_months"], "1")
+
+    def test_a_pair_that_clears_in_its_own_month_writes_nothing(self):
+        conn = make_db()
+        add_reconciled(conn, "2026-05-04", "May 2026")
+        add_reconciled(conn, "2026-06-04", "June 2026")
+        self._pending(conn, "Athens_07_2026.pdf", "2026-07-04")
+        rows = self._export(conn)
+        self.assertEqual(rows["Athens_07_2026.pdf"]["payment_lag_months"], "")
+
+    def test_the_older_columns_keep_their_places(self):
+        """bankrec and stage_month read this file by name, so the new column goes on the end."""
+        conn = make_db()
+        add_reconciled(conn, "2026-05-30", "June 2026")
+        add_reconciled(conn, "2026-06-30", "July 2026")
+        self._pending(conn, "Athens_07_2026.pdf", "2026-07-30")
+        self._export(conn)
+        self.assertEqual(ip.SIDECAR_HEADER[:9],
+                         ["stored_file", "amount", "vendor", "invoice_number", "unit",
+                          "invoice_date", "property", "source_file", "check_number"])
+        self.assertEqual(ip.SIDECAR_HEADER[9], "payment_lag_months")
+
 
 
 if __name__ == "__main__":

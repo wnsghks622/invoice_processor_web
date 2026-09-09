@@ -742,8 +742,12 @@ def move_to_processed(src: Path, subfolder: str = "", final_name: str = None) ->
 # - AMOUNT SIDECAR (handoff to the Bank Rec Auto-Assembler) -
 
 SIDECAR_NAME   = "_amounts.csv"
+# Append-only: bankrec.py and stage_month.py read this file with csv.DictReader, so a new
+# column on the END is invisible to a reader that does not know about it, and a sidecar
+# written before the column existed still parses.
 SIDECAR_HEADER = ["stored_file", "amount", "vendor", "invoice_number",
-                  "unit", "invoice_date", "property", "source_file", "check_number"]
+                  "unit", "invoice_date", "property", "source_file", "check_number",
+                  "payment_lag_months"]
 
 
 def _write_sidecar(folder: Path, rows: list) -> None:
