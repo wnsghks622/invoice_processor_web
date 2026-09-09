@@ -39,9 +39,14 @@ logging.getLogger("pypdf").setLevel(logging.ERROR)  # silence recoverable-PDF no
 # runs fine without it (those files fall back to the filename amount + a flag).
 try:
     import fitz                      # PyMuPDF, renders pages to images
+    _HAVE_FITZ = True
+except Exception:
+    _HAVE_FITZ = False
+
+try:
     import pytesseract
     from PIL import Image
-    _OCR_LIBS = True
+    _OCR_LIBS = _HAVE_FITZ           # OCR needs the renderer as well as the engine
 except Exception:
     _OCR_LIBS = False
 
@@ -112,11 +117,20 @@ def classify(fname):
             return "statement"
     return "support"
 
-def list_pdfs(folder):
+# The processor keeps an invoice's original extension, so a bill photographed or
+# screenshotted on a phone lands in the property folder as an image beside the PDFs.
+# Those are real invoices - walk them too, or they never reach the matcher at all.
+IMAGE_EXTS  = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".tiff", ".tif")
+SOURCE_EXTS = (".pdf",) + IMAGE_EXTS
+
+def is_image(path):
+    return path.lower().endswith(IMAGE_EXTS)
+
+def list_source_files(folder):
     out = []
     for root, _dirs, files in os.walk(folder):
         for f in files:
-            if f.lower().endswith(".pdf"):
+            if f.lower().endswith(SOURCE_EXTS):
                 out.append(os.path.join(root, f))
     return sorted(out)
 
@@ -138,6 +152,18 @@ def _fixed_bytes(path):
 def _reader(path):
     return PdfReader(io.BytesIO(_fixed_bytes(path)))
 
+def pdf_pages(path):
+    """A PdfReader for `path`, converting an image to a one-page PDF first. pypdf cannot
+    open a JPEG ("Stream has ended unexpectedly"), so without this a matched photo of an
+    invoice is dropped from the packet - asserting a clearance whose paperwork is absent."""
+    if is_image(path):
+        if not _HAVE_FITZ:
+            raise RuntimeError("PyMuPDF is required to place %s in the packet"
+                               % os.path.basename(path))
+        with fitz.open(path) as img:
+            return PdfReader(io.BytesIO(img.convert_to_pdf()))
+    return _reader(path)
+
 def text_layer(path):
     if path in _text_cache:
         return _text_cache[path]
@@ -154,7 +180,8 @@ def ocr_text(path, dpi=300):
     if path in _ocr_cache:
         return _ocr_cache[path]
     try:
-        doc = fitz.open(stream=_fixed_bytes(path), filetype="pdf")
+        doc = (fitz.open(path) if is_image(path)
+               else fitz.open(stream=_fixed_bytes(path), filetype="pdf"))
         parts = []
         for pg in doc:
             pix = pg.get_pixmap(dpi=dpi)
@@ -1098,9 +1125,9 @@ def looks_like_statement_text(text):
 
 def build(folder, out_path=None, out_dir=None, order="grouped", ocr_mode="auto",
           strict=False, verbose=True, period=""):
-    pdfs = [p for p in list_pdfs(folder) if "ASSEMBLED" not in p]
+    sources = [p for p in list_source_files(folder) if "ASSEMBLED" not in p]
     buckets = {"rec": [], "statement": [], "cover": [], "financial": [], "support": []}
-    for p in pdfs:
+    for p in sources:
         buckets[classify(p)].append(p)
     # Safety net: if no file's NAME looks like a statement (e.g. it's just
     # "JHR IV.pdf"), promote the support PDF whose CONTENT reads like one.
@@ -1414,7 +1441,7 @@ def build(folder, out_path=None, out_dir=None, order="grouped", ocr_mode="auto",
     writer = PdfWriter()
     for p in order_list:
         try:
-            for pg in _reader(p).pages:
+            for pg in pdf_pages(p).pages:
                 writer.add_page(pg)
         except Exception as e:
             say("  ! could not add", os.path.basename(p), e)
