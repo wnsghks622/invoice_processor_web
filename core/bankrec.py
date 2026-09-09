@@ -403,6 +403,15 @@ def parse_statement(paths):
         if low.startswith("daily balance") or low.startswith("account summary") \
            or low.startswith("summary of accounts"):
             section = sign = None; continue
+        # --- section footers: the section's own total, not a transaction ---
+        # "3 item(s) totaling $9,751.34" / "Subtotal $X" / "Total checks $X" repeat what the
+        # section already listed. When a section holds exactly ONE item that total equals the
+        # item's own amount, so parsing it would hand placement a second, date-less line of the
+        # same amount for a stale same-amount invoice to land on.
+        if re.match(r"\d+\s+item\(s\)\s+totaling", low) \
+           or low.startswith(("subtotal", "total checks", "total deposits",
+                              "total other", "total electronic")):
+            continue
         # --- header / boilerplate rows to skip ---
         if low.startswith("date description") or low.startswith("check nbr") \
            or low.startswith("date amount") or low.startswith("* indicates") \
@@ -437,6 +446,11 @@ class Doc:
 def file_number_tokens(path):
     name = os.path.splitext(os.path.basename(path))[0]
     name = re.sub(r"\(.*?\)", " ", name)            # drop "(1)" duplicate markers
+    # Drop the processor's own <Vendor>_MM_YYYY[_N] stamp. Those digits name the FILE, not the
+    # bill: left in, "KORUS_07_2026_1.pdf" answers to cleared check #1 on nothing but its
+    # de-duplication suffix, and would answer to a $2,026.00 line on its year. A hand-named
+    # "4.pdf" or "1234.pdf" keeps its number - that one really is the deposit/check it names.
+    name = re.sub(r"_(0?[1-9]|1[0-2])_(19|20)\d{2}(_\d+)?$", "", name)
     ints, moneys = set(), set()
     for tok in re.findall(r"\d+(?:\.\d+)?", name):
         if "." in tok:
@@ -519,10 +533,18 @@ def profile_support(paths, ocr_mode, sidecar=None):
         d.path = p
         d.check_numbers = set(sc["checks"]) if sc else set()   # user-entered check #s, if any
         if sc and sc["amounts"]:
-            text = text_layer(p)                          # verified amount -> text only, skip OCR
+            # A verified amount settles WHAT the bill is for, not WHO it is from. The text is
+            # still read for vendor/slip signals, so an image-only scan gets OCR'd here too -
+            # without it a scanned invoice carries no vendor keys at all, and an unverified,
+            # OCR'd copy of the same bill from a past month out-scores it on the vendor bonus
+            # and takes its statement line. content_text only reaches for OCR when the text
+            # layer is essentially empty, so a normal PDF costs nothing extra.
+            text, _ocr = content_text(p, ocr_mode)
             d.content_amounts = set(sc["amounts"])        # verified, authoritative amount(s)
             d.fname_ints, d.fname_moneys = set(), set()   # suppress MM/YYYY filename-token noise
             d.slip_total = slip_total(text)
+            # ocr_used stays False: the manifest tag reports how the AMOUNT was established,
+            # and this doc's amount came from the sidecar, not from reading the page.
             d.ocr_used, d.verified, d.sidecar_total = False, True, sc["total"]
         else:
             text, ocr_used = content_text(p, ocr_mode)    # no verified amount -> read it (OCR ok)
@@ -589,6 +611,21 @@ def _doc_total(d):
         return a
     pos = [x for x in d.content_amounts if x > 0]
     return round(max(pos), 2) if pos else None
+
+def _placement_rank(item):
+    """Sort key for the greedy placement passes: strongest evidence first, then - among docs
+    that tie on evidence - the one whose own date sits nearest the statement line's date, then
+    a verified amount over a read one, then path for a stable order. Without the date
+    tie-break, two same-amount invoices tie at 'content' alone and the line goes to whichever
+    sorted first in the folder: a bill already reconciled in a past month, but left behind in
+    this month's folder, beats the current one on nothing more than its filename."""
+    sc, d, sl, _why = item
+    gap = 10 ** 6
+    if d.doc_date and sl.date:
+        ld = to_date(sl.date)
+        if ld is not datetime.datetime.max:
+            gap = abs((d.doc_date - ld).days)
+    return (-sc, gap, not d.verified, d.path)
 
 def score_doc_line(d, sl):
     """How strongly support doc `d` evidences statement line `sl`."""
@@ -678,15 +715,31 @@ def assign_docs(docs, stmt, txns=None, raw="", period_end=None):
         if sl.seq in used_line:
             continue
         want_slip = (sl.sign == "credit")
-        member_amts = [round(t["amount"], 2) for t in members]
         landed = False
-        for d in docs:
-            if d.path in doc_line or d.is_slip != want_slip:
-                continue
-            a = _doc_total(d)          # verified amount, or a raw invoice's total (its largest figure)
-            if a is not None and a in member_amts:
-                doc_line[d.path] = sl; reason[d.path] = ["settle-member"]; conf[d.path] = "grouped"
-                member_amts.remove(a); landed = True
+        # One member at a time, and the slot goes to the doc that best answers to THAT member -
+        # its check number first, then a shared vendor name. Amount alone decided it before, so
+        # whichever same-amount bill sorted first in the folder took the slot: an unrelated
+        # $1,300.00 management fee beat the $1,300.00 deposit refund the check was actually cut
+        # for, and put a bill that never cleared here into the assembled PDF.
+        for t in members:
+            want = round(t["amount"], 2)
+            tran = re.sub(r"\D", "", t["tran"] or "")
+            mkeys = vendor_keys(t["notes"])
+            cands = []
+            for d in docs:
+                if d.path in doc_line or d.is_slip != want_slip:
+                    continue
+                a = _doc_total(d)      # verified amount, or a raw invoice's total (its largest figure)
+                if a is None or a != want:
+                    continue
+                by_check = 0 if (tran.isdigit() and int(tran) in d.check_numbers) else 1
+                by_vendor = 0 if (mkeys & d.vendor_keys) else 1
+                cands.append((by_check, by_vendor, d.path, d))
+            if not cands:
+                continue               # member's invoice isn't in the folder - leave it unfilled
+            d = min(cands)[3]
+            doc_line[d.path] = sl; reason[d.path] = ["settle-member"]; conf[d.path] = "grouped"
+            landed = True
         if landed:
             used_line.add(sl.seq)
 
@@ -707,7 +760,7 @@ def assign_docs(docs, stmt, txns=None, raw="", period_end=None):
             sc, why = score_doc_line(d, sl)
             if sc > 0 and (set(why) - {"vendor", "date", "date~"}):   # need amount/number evidence, not vendor/date alone
                 pairs.append((sc, d, sl, why))
-    pairs.sort(key=lambda x: -x[0])
+    pairs.sort(key=_placement_rank)
     for sc, d, sl, why in pairs:
         if d.path in doc_line or sl.seq in used_line:
             continue
@@ -787,8 +840,17 @@ def assign_docs(docs, stmt, txns=None, raw="", period_end=None):
         # ("electronic") section still gets a credit fallback line for its slip.
         cred_amts = {round(sl.amount, 2) for sl in stmt if sl.sign == "credit"}
         debit_amts = {round(sl.amount, 2) for sl in stmt if sl.sign == "debit"}
+        # Cleared items a settlement already carries files for. Their amounts are nowhere on the
+        # statement - the bank netted them into the one settlement line - so without this they
+        # each earn a fallback line of their own, and the same cleared item ends up in the PDF
+        # twice: once grouped on the settlement, once again on a line that never existed.
+        grouped_settle_seqs = {ln.seq for ln in doc_line.values() if ln.is_settlement}
+        settled_ids = {id(t) for sl, ms in settlements if sl.seq in grouped_settle_seqs
+                       for t in ms}
         faux = []
         for t in txns:
+            if id(t) in settled_ids:
+                continue
             amts = cred_amts if t["type"] == "deposit" else debit_amts
             if round(t["amount"], 2) in amts:
                 continue
@@ -811,7 +873,7 @@ def assign_docs(docs, stmt, txns=None, raw="", period_end=None):
                 sc, why = score_doc_line(d, sl)
                 if sc > 0 and (set(why) - {"vendor", "date", "date~"}):   # amount/number evidence, not vendor/date alone
                     pairs.append((sc, d, sl, why))
-        pairs.sort(key=lambda x: -x[0])
+        pairs.sort(key=_placement_rank)
         used_faux = set()
         for sc, d, sl, why in pairs:
             if d.path in doc_line or id(sl) in used_faux:
