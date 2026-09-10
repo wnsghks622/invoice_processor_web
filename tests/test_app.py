@@ -404,6 +404,195 @@ class FixerSetVendorRoute(unittest.TestCase):
         self.assertEqual(row["stored_file"], "Athens_06_2026.pdf")
 
 
+class FixerCreateVendorRoute(unittest.TestCase):
+    """POST /fixer/<id>/vendor/new (fixer_create_vendor): the other half of the vendor queue.
+
+    Before this route the queue could only say "this invoice belongs to one of the vendors you
+    already have" - a genuinely new vendor had no exit from it except a detour to the Vendors
+    page and back. Same reject-before-write shape as fixer_set_vendor, plus one thing that route
+    does not have: a sweep. Creating a vendor seeds the raw spelling as its first alias, so every
+    other queued invoice printing that same spelling is now decided too, and leaving those rows
+    sitting in the queue to be re-confirmed one at a time would be busywork. The sweep is
+    deliberately narrow - vendor_match.is_exact, tier 1's own bar - so a close-but-not-identical
+    spelling still reaches a human instead of being swept up on a guess.
+    """
+
+    def setUp(self):
+        _conn.execute("DELETE FROM invoices")
+        _conn.execute("DELETE FROM vendors")
+        _conn.commit()
+        self.client = app.app.test_client()
+
+    def _insert_unvendored(self, invoice_id, vendor_name="Athens Svcs", property_="Test Property"):
+        _conn.execute(
+            "INSERT INTO invoices (id, vendor_name, property, vendor_id, vendor_needs_review) "
+            "VALUES (?, ?, ?, NULL, 1)",
+            (invoice_id, vendor_name, property_),
+        )
+        _conn.commit()
+
+    def _insert_vendor(self, vendor_id, short_name, canonical_name="", aliases=""):
+        _conn.execute(
+            "INSERT INTO vendors (id, short_name, canonical_name, aliases) VALUES (?, ?, ?, ?)",
+            (vendor_id, short_name, canonical_name, aliases),
+        )
+        _conn.commit()
+
+    def test_a_blank_short_name_is_rejected_and_writes_nothing(self):
+        self._insert_unvendored(1, vendor_name="Athens Svcs")
+
+        for payload in ({}, {"short_name": "   "}):
+            with self.subTest(payload=payload):
+                resp = self.client.post("/fixer/1/vendor/new", data=payload)
+                self.assertEqual(resp.status_code, 302)
+                self.assertTrue(resp.headers.get("Location", "").endswith("/fixer"))
+                self.assertEqual(db.all_vendors(), [])
+                self.assertEqual(len(db.vendor_review_invoices()), 1)
+
+        flashed = self.client.get("/fixer").get_data(as_text=True)
+        self.assertIn("Name the new vendor.", flashed)
+
+    def test_a_missing_invoice_is_rejected_and_writes_nothing(self):
+        resp = self.client.post("/fixer/999/vendor/new", data={"short_name": "Athens"})
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(db.all_vendors(), [])
+
+        flashed = self.client.get("/fixer").get_data(as_text=True)
+        self.assertIn("That invoice no longer exists.", flashed)
+
+    def test_an_invoice_with_no_vendor_name_is_rejected_and_writes_nothing(self):
+        """The raw string is the whole point: it becomes the new vendor's canonical name and its
+        first alias. Minting a vendor from a blank one would create a row that can never match
+        anything, whose only identity is a short name a human typed."""
+        self._insert_unvendored(1, vendor_name="")
+
+        resp = self.client.post("/fixer/1/vendor/new", data={"short_name": "Athens"})
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(db.all_vendors(), [])
+        self.assertEqual(db.get_invoice(1)["vendor_needs_review"], 1)
+
+        flashed = self.client.get("/fixer").get_data(as_text=True)
+        self.assertIn("has no vendor name", flashed)
+
+    def test_a_spelling_that_already_binds_is_rejected_and_points_at_confirm(self):
+        """Guards the gap between rendering the page and posting from it - a second tab, or an
+        earlier row on this same page, can create the vendor in between. Without this the queue
+        would happily mint a duplicate vendor for a string that already resolves."""
+        self._insert_vendor(1, "Athens", canonical_name="Athens Services",
+                            aliases="Athens Svcs")
+        self._insert_unvendored(1, vendor_name="Athens Svcs")
+
+        resp = self.client.post("/fixer/1/vendor/new", data={"short_name": "Athens2"})
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(len(db.all_vendors()), 1)              # no second vendor minted
+        self.assertEqual(db.get_invoice(1)["vendor_needs_review"], 1)
+
+        flashed = self.client.get("/fixer").get_data(as_text=True)
+        self.assertIn("already matches Athens Services", flashed)
+
+    def test_a_taken_short_name_is_rejected_and_writes_nothing(self):
+        """vendors.short_name is NOT NULL UNIQUE. The prefill is de-duplicated, but the box is
+        editable, so the collision has to be caught here rather than surfacing as a 500."""
+        self._insert_vendor(1, "Athens", canonical_name="Athens Services")
+        self._insert_unvendored(1, vendor_name="Athena Landscaping")
+
+        resp = self.client.post("/fixer/1/vendor/new", data={"short_name": "Athens"})
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(len(db.all_vendors()), 1)
+        self.assertEqual(db.get_invoice(1)["vendor_needs_review"], 1)
+
+        flashed = self.client.get("/fixer").get_data(as_text=True)
+        self.assertIn("already taken", flashed)
+
+    def test_creating_seeds_identity_from_the_raw_string_and_binds_the_invoice(self):
+        self._insert_unvendored(1, vendor_name="Athens Svcs")
+
+        resp = self.client.post("/fixer/1/vendor/new", data={"short_name": "Athens"})
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(resp.headers.get("Location", "").endswith("/fixer"))
+
+        vendors = db.all_vendors()
+        self.assertEqual(len(vendors), 1)
+        self.assertEqual(vendors[0]["short_name"], "Athens")
+        self.assertEqual(vendors[0]["canonical_name"], "Athens Svcs")
+        self.assertEqual(vendors[0]["aliases"], "Athens Svcs")
+
+        row = db.get_invoice(1)
+        self.assertEqual(row["vendor_id"], vendors[0]["id"])
+        self.assertEqual(row["vendor_needs_review"], 0)
+        self.assertEqual(row["vendor_name"], "Athens Svcs")      # provenance - never rewritten
+
+        flashed = self.client.get("/fixer").get_data(as_text=True)
+        self.assertIn("Created Athens Svcs - matched 1 invoice.", flashed)
+
+    def test_creating_sweeps_every_queued_invoice_printing_the_same_spelling(self):
+        self._insert_unvendored(1, vendor_name="Athens Svcs")
+        self._insert_unvendored(2, vendor_name="  athens   SVCS ")   # case and spacing only
+
+        resp = self.client.post("/fixer/1/vendor/new", data={"short_name": "Athens"})
+        self.assertEqual(resp.status_code, 302)
+
+        vendor_id = db.all_vendors()[0]["id"]
+        for invoice_id in (1, 2):
+            with self.subTest(invoice_id=invoice_id):
+                row = db.get_invoice(invoice_id)
+                self.assertEqual(row["vendor_id"], vendor_id)
+                self.assertEqual(row["vendor_needs_review"], 0)
+        self.assertEqual(db.vendor_review_invoices(), [])
+
+        flashed = self.client.get("/fixer").get_data(as_text=True)
+        self.assertIn("Created Athens Svcs - matched 2 invoices.", flashed)
+
+    def test_the_sweep_leaves_a_close_but_different_spelling_queued(self):
+        """The sweep binds with no human review, so it uses tier 1's bar and not a fuzzy one.
+        'Athens Service' scores high against 'Athens Svcs' but is not the same string - it stays
+        in the queue, where it will now show the new vendor as its suggestion."""
+        self._insert_unvendored(1, vendor_name="Athens Svcs")
+        self._insert_unvendored(2, vendor_name="Athens Service")
+
+        self.client.post("/fixer/1/vendor/new", data={"short_name": "Athens"})
+
+        still_queued = db.vendor_review_invoices()
+        self.assertEqual([r["id"] for r in still_queued], [2])
+        self.assertIsNone(db.get_invoice(2)["vendor_id"])
+
+
+class FixerCreateVendorPanel(unittest.TestCase):
+    """GET /fixer: the create-vendor box on each queued row, and its prefilled short name."""
+
+    def setUp(self):
+        _conn.execute("DELETE FROM invoices")
+        _conn.execute("DELETE FROM vendors")
+        _conn.commit()
+        self.client = app.app.test_client()
+
+    def _insert_unvendored(self, invoice_id, vendor_name="Athens Svcs"):
+        _conn.execute(
+            "INSERT INTO invoices (id, vendor_name, property, vendor_id, vendor_needs_review) "
+            "VALUES (?, ?, 'Test Property', NULL, 1)",
+            (invoice_id, vendor_name),
+        )
+        _conn.commit()
+
+    def test_each_queued_row_offers_a_create_box_prefilled_from_the_raw_string(self):
+        self._insert_unvendored(1, vendor_name="Athens Services")
+
+        html = self.client.get("/fixer").get_data(as_text=True)
+        self.assertIn('action="/fixer/1/vendor/new"', html)
+        self.assertIn('value="Athens"', html)
+
+    def test_two_rows_deriving_the_same_short_name_are_prefilled_differently(self):
+        """Two genuinely different new vendors can reduce to the same first word. Prefilling both
+        boxes with 'Black' would make the second Create fail on the UNIQUE constraint after the
+        first succeeded - a rejection the user did nothing to earn."""
+        self._insert_unvendored(1, vendor_name="Black Jack Market")
+        self._insert_unvendored(2, vendor_name="Black Water Operations")
+
+        html = self.client.get("/fixer").get_data(as_text=True)
+        self.assertIn('value="Black"', html)
+        self.assertIn('value="Black2"', html)
+
+
 class EditInvoiceRoute(unittest.TestCase):
     """POST /invoices/<id>/edit (edit_invoice): the two derived-field invariants the route
     is responsible for keeping in sync with their editable source field - invoice_date_iso

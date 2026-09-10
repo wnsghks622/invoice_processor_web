@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime
 import shutil
+import sqlite3
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -721,8 +722,14 @@ def fixer():
         r["has_file"] = state.resolve_invoice_file(r) is not None
     vendors = db.all_vendors()
     unvendored = db.vendor_review_invoices()
+    used_short = {v["short_name"].strip().lower() for v in vendors if v.get("short_name")}
     for r in unvendored:                 # pre-select the best candidate on each row
         r["suggestion"] = vendor_match.match(r.get("vendor_name"), vendors)
+        # Prefill for the row's create-new-vendor box. `used_short` is mutated as the loop
+        # goes, so two rows whose raw strings reduce to the same first word are offered
+        # different names - otherwise the second Create would fail on short_name's UNIQUE
+        # constraint straight after the first one succeeded.
+        r["suggested_short"] = vendor_match.unique_short_name(r.get("vendor_name"), used_short)
     return render_template("fixer.html",
                            reviews=reviews,
                            undated=db.unresolved_date_invoices(),
@@ -802,6 +809,74 @@ def fixer_set_vendor(invoice_id):
 
     db.set_invoice_vendor(invoice_id, vendor_id)
     flash(f"Matched to {vendor.get('canonical_name') or vendor['short_name']}.")
+    return redirect(url_for("fixer"))
+
+
+@app.route("/fixer/<int:invoice_id>/vendor/new", methods=["POST"])
+def fixer_create_vendor(invoice_id):
+    """Mint a new vendor from a queued invoice's raw string, then bind every queued invoice
+    printing that same string to it.
+
+    The queue's other exit (fixer_set_vendor) can only pick from vendors that already exist, so
+    a genuinely new vendor had no exit at all - it sat in the queue until someone went to the
+    Vendors page, typed the name a second time, came back, and confirmed. Nothing reaches the
+    vendors table without this click: the processor never creates a vendor on its own.
+
+    The new vendor's identity comes from the invoice, not from the box: canonical_name and the
+    first alias are both the raw string exactly as printed. The box supplies only short_name,
+    which is a filing convenience (it names the stored PDF) and is the one field a human is
+    better placed to choose.
+    """
+    short = request.form.get("short_name", "").strip()
+    if not short:
+        flash("Name the new vendor.")
+        return redirect(url_for("fixer"))
+    inv = db.get_invoice(invoice_id)
+    if not inv:
+        flash("That invoice no longer exists.")
+        return redirect(url_for("fixer"))
+    raw = str(inv.get("vendor_name") or "").strip()
+    if not raw:
+        flash("That invoice has no vendor name to learn from - correct the name on the "
+              "Invoices page first, then match it here.")
+        return redirect(url_for("fixer"))
+
+    # The page was rendered before this post: a second tab, or an earlier row on this same
+    # page, may have created the vendor in between. Re-match rather than mint a duplicate for
+    # a string that now resolves. Only "bind" blocks - a mere suggestion is exactly the case
+    # where a human may be telling us this is a different vendor after all.
+    from core import vendor_match
+    vendors = db.all_vendors()
+    already = vendor_match.match(raw, vendors)
+    if already.outcome == "bind":
+        known = next(v for v in vendors if v["id"] == already.vendor_id)
+        flash(f"'{raw}' already matches {known.get('canonical_name') or known['short_name']} "
+              f"- use Confirm instead.")
+        return redirect(url_for("fixer"))
+
+    try:
+        vendor_id = db.add_vendor(short, raw)
+    except sqlite3.IntegrityError:
+        # vendors.short_name is NOT NULL UNIQUE. The prefill is de-duplicated against the
+        # vendors that existed when the page rendered, but the box is editable and the page
+        # may be stale, so the collision is caught here rather than surfacing as a 500.
+        flash(f"Short name '{short}' is already taken - pick another.")
+        return redirect(url_for("fixer"))
+    db.update_vendor_identity(vendor_id, canonical_name=raw)
+
+    # The raw string is now this vendor's first alias, so every other queued invoice printing
+    # it is decided too - re-confirming those one at a time would be busywork. is_exact is
+    # tier 1's own bar, deliberately narrower than the matcher's fuzzy tiers: a close-but-not
+    # identical spelling stays in the queue for a human rather than being bound on a guess.
+    # The clicked invoice is in the set unconditionally, not merely because it is flagged.
+    targets = {invoice_id}
+    targets.update(r["id"] for r in db.vendor_review_invoices()
+                   if vendor_match.is_exact(r.get("vendor_name"), raw))
+    for target_id in sorted(targets):
+        db.set_invoice_vendor(target_id, vendor_id)
+
+    flash(f"Created {raw} - matched {len(targets)} "
+          f"invoice{'' if len(targets) == 1 else 's'}.")
     return redirect(url_for("fixer"))
 
 

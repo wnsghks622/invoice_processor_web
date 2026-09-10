@@ -24,34 +24,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core import db, vendor_match as vm
 
 
-def _short_name(canonical: str) -> str:
-    """A filename-safe short name: the first meaningful word, or an acronym for long names."""
-    import re
-    words = [w for w in re.split(r"\s+", canonical) if w]
-    if len(words) >= 4:
-        acronym = "".join(w[0] for w in words if w[0].isalnum()).upper()[:8]
-        if len(acronym) >= 3:
-            return acronym
-    return re.sub(r"[^0-9A-Za-z&-]", "", words[0]) if words else "Vendor"
-
-
-def _unique_short_name(canonical: str, used: set) -> str:
-    """_short_name(canonical), disambiguated against short names already taken.
-
-    vendors.short_name is NOT NULL UNIQUE, but _short_name() only looks at one cluster
-    at a time - it has no way to know that, say, 'Black Shadow III', 'Black Jack
-    Market', and 'Black Water Operations' are three different real vendors that all
-    reduce to 'Black'. cluster() correctly keeps them as three separate clusters; this
-    is what stops that correct decision from crashing the insert. `used` is mutated in
-    place so later collisions in the same run see earlier picks.
-    """
-    base = _short_name(canonical)
-    candidate, n = base, 2
-    while candidate.strip().lower() in used:
-        candidate = f"{base}{n}"
-        n += 1
-    used.add(candidate.strip().lower())
-    return candidate
+# Both helpers moved to core/vendor_match.py when the Fixer page grew a "create new vendor"
+# box: that box and this script both mint vendors.short_name, and two derivations of the
+# same thing would drift apart. Re-bound to their old private names here so this module's
+# call sites - and the tests that pin them - keep reading the same way.
+_short_name = vm.short_name
+_unique_short_name = vm.unique_short_name
 
 
 def _known_identities(vendors: list[dict]) -> set:

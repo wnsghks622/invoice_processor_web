@@ -50,6 +50,8 @@ that property's pending pool (and the filed PDF moves too).</p>
   </div>
   <p class="muted">
     Confirming also teaches the app this spelling &mdash; you will not be asked about it again.
+    If the vendor is new, <strong>Create</strong> makes one from the name as printed and matches
+    every other invoice printing that same spelling.
   </p>
   <table class="props">
     <thead>
@@ -73,6 +75,15 @@ that property's pending pool (and the filed PDF moves too).</p>
               {% endfor %}
             </select>
             <button class="btn" type="submit">Confirm</button>
+          </form>
+          {# Second form, not a second control on the first: Confirm posts a vendor_id that
+             must already exist, Create posts a name that must not. #}
+          <form method="post" action="{{ url_for('fixer_create_vendor', invoice_id=inv.id) }}"
+                class="add-form">
+            <span class="muted">or new:</span>
+            <input name="short_name" value="{{ inv.suggested_short }}" size="12" required
+                   title="Short name for the new vendor - used in the filed PDF's name">
+            <button class="btn small" type="submit">Create</button>
           </form>
         </td>
       </tr>

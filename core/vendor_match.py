@@ -83,6 +83,24 @@ def _fold(name: Optional[str]) -> str:
     return re.sub(r"\s+", " ", (name or "").strip().lower())
 
 
+def is_exact(a: Optional[str], b: Optional[str]) -> bool:
+    """True when two raw strings are the same string modulo case and whitespace.
+
+    Tier 1's rule, exposed. app.py sweeps the vendor-review queue after a new vendor is
+    created and binds every invoice printing the same string; that sweep has to apply the
+    identical bar match() applies, and a second comparison hand-rolled at the call site
+    would drift from this one the moment either is tuned. Deliberately narrower than
+    normalize() - a punctuation difference is a close spelling for a human to confirm, not
+    a silent bind.
+
+    Two blanks are not exact: a blank vendor string identifies nothing, so without this
+    guard one blank-vendor invoice would drag every other blank-vendor invoice in the queue
+    onto the vendor it created.
+    """
+    folded = _fold(a)
+    return bool(folded) and folded == _fold(b)
+
+
 def _aliases_of(vendor: dict) -> list[str]:
     """Every string that identifies this vendor: canonical name, short name, aliases.
     Used for the exact and close-spelling tiers."""
@@ -230,3 +248,45 @@ def append_alias(existing: Optional[str], raw: Optional[str]) -> str:
     if candidate and candidate.lower() not in {a.lower() for a in aliases}:
         aliases.append(candidate)
     return "; ".join(aliases)
+
+
+def short_name(canonical: Optional[str]) -> str:
+    """A filename-safe short name: the first meaningful word, or an acronym for long names.
+
+    Lives here rather than in scripts/bootstrap_vendors.py (where it started) because two
+    paths now mint vendors.short_name - that one-off bootstrap, and the Fixer page's
+    'create new vendor' box - and two derivations of the same thing would drift apart.
+
+    Falls back to 'Vendor' when nothing survives: short_name() feeds a NOT NULL column and
+    prefills a required form box, so returning '' would put a blank in both. Stripping to
+    filename-safe characters can empty a word that looked fine ('***' -> ''), so the
+    fallback covers more than the blank-input case.
+    """
+    words = [w for w in re.split(r"\s+", (canonical or "").strip()) if w]
+    if len(words) >= 4:
+        acronym = "".join(w[0] for w in words if w[0].isalnum()).upper()[:8]
+        if len(acronym) >= 3:
+            return acronym
+    return (re.sub(r"[^0-9A-Za-z&-]", "", words[0]) if words else "") or "Vendor"
+
+
+def unique_short_name(canonical: Optional[str], used: set) -> str:
+    """short_name(canonical), disambiguated against short names already taken.
+
+    vendors.short_name is NOT NULL UNIQUE, but short_name() only looks at one name at a
+    time - it has no way to know that, say, 'Black Shadow III', 'Black Jack Market', and
+    'Black Water Operations' are three different real vendors that all reduce to 'Black'.
+    This is what stops that correct decision from crashing the insert. `used` is mutated in
+    place so later collisions in the same run see earlier picks.
+
+    Compared case-insensitively even though SQLite's UNIQUE is case-sensitive (so 'Black'
+    and 'BLACK' would both insert quite legally). The point here is a vendor list a human
+    can read, not a legal insert.
+    """
+    base = short_name(canonical)
+    candidate, n = base, 2
+    while candidate.strip().lower() in used:
+        candidate = f"{base}{n}"
+        n += 1
+    used.add(candidate.strip().lower())
+    return candidate
