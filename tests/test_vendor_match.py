@@ -277,5 +277,66 @@ class RecordCarriesVendorId(unittest.TestCase):
         })
 
 
+class ShortNameDerivation(unittest.TestCase):
+    """short_name()/unique_short_name(), moved here from scripts/bootstrap_vendors.py so the
+    Fixer page's 'create new vendor' box and the one-off bootstrap derive names the same way.
+    bootstrap keeps importing them under its old private names, so tests/test_bootstrap.py
+    still pins the same behaviour from the other side."""
+
+    def test_a_short_name_is_the_first_meaningful_word(self):
+        self.assertEqual(vm.short_name("Athens Services"), "Athens")
+
+    def test_a_long_name_becomes_an_acronym(self):
+        self.assertEqual(vm.short_name("Los Angeles Department of Water and Power"), "LADOWAP")
+
+    def test_punctuation_is_stripped_so_the_result_is_filename_safe(self):
+        self.assertEqual(vm.short_name("A.B.C. Plumbing"), "ABC")
+
+    def test_a_blank_name_falls_back_rather_than_raising(self):
+        """short_name() feeds a NOT NULL column. An invoice whose vendor string is blank must
+        not take the route down with an IndexError on words[0]."""
+        self.assertEqual(vm.short_name("   "), "Vendor")
+
+    def test_a_first_word_of_pure_punctuation_still_yields_a_name(self):
+        """Stripping to filename-safe characters can empty the first word ('***' -> '').
+        short_name() feeds a NOT NULL column and prefills a required form box, so it falls
+        back the same way a blank name does rather than handing back ''."""
+        self.assertEqual(vm.short_name("*** Plumbing"), "Vendor")
+
+    def test_a_taken_short_name_is_suffixed_rather_than_colliding(self):
+        used = {"black"}
+        self.assertEqual(vm.unique_short_name("Black Jack Market", used), "Black2")
+        self.assertEqual(vm.unique_short_name("Black Water Operations", used), "Black3")
+
+    def test_the_used_set_is_matched_case_insensitively(self):
+        """vendors.short_name is UNIQUE but SQLite's UNIQUE is case-SENSITIVE, so 'Black' and
+        'BLACK' would both insert. Suffixing on a case-insensitive compare is what keeps the
+        vendor list readable, not what keeps the insert legal."""
+        used = {"black"}
+        self.assertEqual(vm.unique_short_name("BLACK MARKET", used), "BLACK2")
+
+
+class IsExact(unittest.TestCase):
+    """is_exact(): tier 1's rule, exposed. The Fixer page's create-vendor sweep binds every
+    queued invoice printing the same string, and it must apply exactly the bar match() applies
+    - a second hand-rolled comparison in app.py would drift from this one."""
+
+    def test_case_and_whitespace_only_differences_are_exact(self):
+        self.assertTrue(vm.is_exact("Athens Services", "  athens   SERVICES "))
+
+    def test_a_punctuation_difference_is_not_exact(self):
+        """Deliberately narrower than normalize(): 'Mitsubishi Electric US Inc' is a close
+        spelling of 'Mitsubishi Electric US, Inc.', not the same string. The sweep must leave
+        that second invoice queued for a human."""
+        self.assertFalse(vm.is_exact("Mitsubishi Electric US Inc",
+                                     "Mitsubishi Electric US, Inc."))
+
+    def test_two_blanks_are_not_exact(self):
+        """Guards the sweep: without this, creating a vendor from one blank-vendor invoice
+        would bind every other blank-vendor invoice in the queue to it."""
+        self.assertFalse(vm.is_exact("", ""))
+        self.assertFalse(vm.is_exact("   ", None))
+
+
 if __name__ == "__main__":
     unittest.main()
