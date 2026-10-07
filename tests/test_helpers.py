@@ -480,3 +480,293 @@ class MonthDirSort(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# The rec report lists check #10626 (All Star Windows Cleaning, $20,000.00) as OUTSTANDING, and
+# separately clears two unrelated $20,000.00 checks to other payees. Nothing in the bank
+# statement shows $20,000.00 - the bank posted the cleared pair inside a lump - so the rec
+# fallback mints a pseudo-line for each, and the outstanding invoice's amount fits one exactly.
+REC_OUTSTANDING_FIXTURE = """Bank Reconciliation Report
+Outstanding Deposits
+08/31/2026 707 :ACH/WIPS Deposit 13,412.69
+Plus: Outstanding Deposits 13,412.69
+Outstanding Checks
+Check Date Check Number Payee Amount
+07/21/2026 10597 Buena Park Lock & Key 233.62
+08/31/2026 10626 All Star Windows Cleaning 20,000.00
+Less: Outstanding Checks 20,233.62
+Cleared Items:
+Cleared Checks
+08/14/2026 220 Fortunatos LLC 20,000.00 08/31/2026
+Total Cleared Checks 20,000.00
+Cleared Deposits
+07/03/2026 9999 Remote deposit 8,879.96
+Total Cleared Deposits 8,879.96
+Difference 0.00
+"""
+
+
+class OutstandingCheckNeverClears(unittest.TestCase):
+    """An invoice whose check is still OUTSTANDING must not be attached to a same-amount
+    cleared item written to somebody else. It lands 'high', and reconcile.py auto-stamps
+    'high' as reconciled - so a bill that never cleared drops out of next month's pool."""
+
+    PERIOD_END = datetime.datetime(2026, 8, 31)
+    # A statement that shows no $20,000.00 anywhere, so the rec fallback has to invent the line.
+    OTHER_LINE = bankrec.StmtLine(1, 4508.85, "debit", "other_debit", "08/04/2026",
+                                  "08/04/2026 PAYMENT TO SOMEBODY ELSE", None, False, pos=100)
+    CLEARED_220 = [_txn("check", "220", "Fortunatos LLC", 20000.00, "08/14/2026")]
+
+    def _aswc(self, check_no=10626):
+        d = _mk_invoice("/x/ASWC_08_2026.pdf", 20000.00, datetime.datetime(2026, 8, 2),
+                        vendor_text="All Star Window Cleaning")
+        d.check_numbers = {check_no}
+        return d
+
+    def test_outstanding_checks_are_parsed_off_the_rec_report(self):
+        with mock.patch.object(bankrec, "text_layer", lambda p: REC_OUTSTANDING_FIXTURE):
+            parsed = bankrec.parse_rec("fake.pdf")
+        self.assertEqual(len(parsed["checks"]), 1)          # outstanding rows stay OUT of cleared
+        self.assertEqual(parsed["checks"][0]["tran"], "220")
+        self.assertEqual(sorted(parsed["outstanding_checks"]), [10597, 10626])
+
+    def test_invoice_is_not_placed_on_a_cleared_check_with_a_different_number(self):
+        aswc = self._aswc()
+        doc_line, reason, _conf, _cov = bankrec.assign_docs(
+            [aswc], [self.OTHER_LINE], txns=self.CLEARED_220, period_end=self.PERIOD_END)
+        self.assertNotIn(aswc.path, doc_line, "placed via %s" % reason.get(aswc.path))
+
+    def test_invoice_carrying_the_cleared_check_number_still_places(self):
+        """The veto must read a contradiction, not merely the presence of a check number."""
+        paid = self._aswc(check_no=220)
+        doc_line, reason, conf, _cov = bankrec.assign_docs(
+            [paid], [self.OTHER_LINE], txns=self.CLEARED_220, period_end=self.PERIOD_END)
+        self.assertIn(paid.path, doc_line)
+        self.assertIn("check#", reason[paid.path])
+        self.assertEqual(conf[paid.path], "high")
+
+    def test_outstanding_invoice_is_held_off_a_line_that_carries_no_check_number(self):
+        """Second layer, needed on its own: an 'other debits' statement line has no check
+        number, so the contradiction veto has nothing to compare and cannot fire."""
+        aswc = self._aswc()
+        numberless = bankrec.StmtLine(1, 20000.00, "debit", "other_debit", "08/14/2026",
+                                      "08/14/2026 OUTGOING WIRE", None, False, pos=100)
+        doc_line, reason, _conf, _cov = bankrec.assign_docs(
+            [aswc], [numberless], txns=[], period_end=self.PERIOD_END,
+            outstanding_checks={10626})
+        self.assertNotIn(aswc.path, doc_line, "placed via %s" % reason.get(aswc.path))
+        self.assertEqual(reason[aswc.path], ["outstanding-check"])
+
+
+# Long payee names wrap in the rec PDF's text layer: the row's amount is pushed onto its own
+# line, sometimes with a line of payee name in between. The one-line row regex matched none of
+# them, so the whole row vanished - 48 of them across 18 of the real rec reports. A dropped
+# CLEARED row is a check with no fallback line, no file, and no place in the "no supporting
+# file" list; a dropped OUTSTANDING row is a check the hold-out cannot hold.
+WRAPPED_REC_FIXTURE = """Bank Reconciliation Report
+Outstanding Checks
+Check Date Check Number Payee Amount
+08/31/2026 10639 RR Franchising, Inc. DBA
+Vanguard Cleaning Systems
+17,160.60
+Less: Outstanding Checks 17,160.60
+Cleared Items:
+Cleared Checks
+08/03/2026 10622 RR Franchising, Inc. DBA
+Vanguard Cleaning Systems
+17,160.60 08/31/2026
+07/21/2026 10610 SUN STEAM CARPET
+CLEANING
+932.15 08/31/2026
+07/12/2026 1234 Vendor payment 500.00
+Total Cleared Checks 18,592.75
+Cleared Deposits
+07/03/2026 9999 Remote deposit 8,879.96
+Total Cleared Deposits 8,879.96
+Difference 0.00
+"""
+
+
+class WrappedRecRows(unittest.TestCase):
+    def _parse(self, text):
+        with mock.patch.object(bankrec, "text_layer", lambda p: text):
+            return bankrec.parse_rec("fake.pdf")
+
+    def test_a_cleared_row_whose_payee_wraps_is_still_parsed(self):
+        parsed = self._parse(WRAPPED_REC_FIXTURE)
+        by_tran = {c["tran"]: c for c in parsed["checks"]}
+        self.assertIn("10622", by_tran)
+        self.assertEqual(by_tran["10622"]["amount"], 17160.60)
+        self.assertEqual(by_tran["10622"]["date"], "08/03/2026")
+
+    def test_the_wrapped_payee_name_is_kept_whole(self):
+        """The payee is what vendor matching reads, so half a name is worse than none."""
+        parsed = self._parse(WRAPPED_REC_FIXTURE)
+        notes = {c["tran"]: c["notes"] for c in parsed["checks"]}
+        self.assertIn("RR Franchising", notes["10622"])
+        self.assertIn("Vanguard Cleaning Systems", notes["10622"])
+
+    def test_every_cleared_row_in_the_section_is_counted(self):
+        parsed = self._parse(WRAPPED_REC_FIXTURE)
+        self.assertEqual(sorted(c["tran"] for c in parsed["checks"]),
+                         ["10610", "10622", "1234"])
+
+    def test_a_wrapped_outstanding_row_is_picked_up_too(self):
+        self.assertEqual(self._parse(WRAPPED_REC_FIXTURE)["outstanding_checks"], [10639])
+
+    def test_a_section_total_is_not_glued_onto_a_dangling_row(self):
+        """'Total Cleared Checks 18,592.75' must never become a transaction of its own."""
+        parsed = self._parse(WRAPPED_REC_FIXTURE)
+        self.assertNotIn(18592.75, [c["amount"] for c in parsed["checks"]])
+
+    def test_a_row_with_no_amount_before_the_next_row_is_dropped(self):
+        text = ("Cleared Checks\n"
+                "08/03/2026 10622 Payee with no amount at all\n"
+                "07/12/2026 1234 Vendor payment 500.00\n"
+                "Total Cleared Checks 500.00\n")
+        parsed = self._parse(text)
+        self.assertEqual([c["tran"] for c in parsed["checks"]], ["1234"])
+
+    def test_an_amount_far_below_its_row_is_not_glued_on(self):
+        """Bounded look-ahead: an amount several lines down belongs to something else."""
+        text = ("Cleared Checks\n"
+                "08/03/2026 10622 Payee\n"
+                "filler one\nfiller two\nfiller three\nfiller four\n"
+                "17,160.60\n"
+                "Total Cleared Checks 0.00\n")
+        self.assertEqual(self._parse(text)["checks"], [])
+
+    def test_one_line_rows_are_unaffected(self):
+        parsed = self._parse(REC_FIXTURE)
+        self.assertEqual(len(parsed["checks"]), 1)
+        self.assertEqual(len(parsed["deposits"]), 1)
+        self.assertEqual(parsed["checks"][0]["amount"], 500.00)
+
+
+class InferredCheckNumberOnAnUnnumberedLine(unittest.TestCase):
+    """HBS Services bills 3,988.00 every month. Check #219 paid August's bill and cleared; the
+    invoice it paid was never uploaded. The SEPTEMBER invoice (check #225) was in the folder,
+    matched the August line on the amount alone, and went into the report - because the line
+    sits in "other debits", carries no check number, and #225 appears nowhere in an August rec,
+    so neither guard had anything to bite on. The rec knows that line is check #219."""
+
+    PERIOD_END = datetime.datetime(2026, 8, 31)
+    LINE = bankrec.StmtLine(1, 3988.00, "debit", "other_debit", "08/17/2026",
+                            "08/17/2026 ELECTRONIC PAYMENT", None, False, pos=100)
+    CLEARED_219 = [_txn("check", "219", "HBS Services LLC", 3988.00, "08/14/2026")]
+
+    def _place(self, doc, txns=None):
+        line = bankrec.StmtLine(self.LINE.seq, self.LINE.amount, self.LINE.sign,
+                                self.LINE.section, self.LINE.date, self.LINE.desc,
+                                None, False, pos=self.LINE.pos)
+        doc_line, reason, _c, _cov = bankrec.assign_docs(
+            [doc], [line], txns=txns if txns is not None else self.CLEARED_219,
+            period_end=self.PERIOD_END)
+        return doc_line, reason
+
+    def _hbs(self, check_no):
+        d = _mk_invoice("/x/HSLHBLS_08_2026.pdf", 3988.00, datetime.datetime(2026, 8, 31),
+                        vendor_text="HBS Services LLC")
+        d.check_numbers = {check_no}
+        return d
+
+    def test_next_months_invoice_is_kept_off_the_line(self):
+        doc = self._hbs(225)
+        doc_line, reason = self._place(doc)
+        self.assertNotIn(doc.path, doc_line, "placed via %s" % reason.get(doc.path))
+
+    def test_the_invoice_that_check_actually_paid_still_places(self):
+        doc = self._hbs(219)
+        doc_line, reason = self._place(doc)
+        self.assertIn(doc.path, doc_line)
+        self.assertIn("check#", reason[doc.path])
+
+    def test_a_doc_with_no_check_number_is_unaffected(self):
+        """Inference must not turn 'no evidence' into 'contradicting evidence'."""
+        doc = self._hbs(225)
+        doc.check_numbers = set()
+        doc_line, _r = self._place(doc)
+        self.assertIn(doc.path, doc_line)
+
+    def test_two_cleared_checks_of_the_same_amount_infer_nothing(self):
+        """Ambiguous: the line could be either check, so no number may be lent to it."""
+        txns = self.CLEARED_219 + [_txn("check", "230", "Someone Else", 3988.00, "08/20/2026")]
+        doc = self._hbs(225)
+        doc_line, _r = self._place(doc, txns=txns)
+        self.assertIn(doc.path, doc_line)
+
+    def test_a_line_that_already_has_a_check_number_keeps_it(self):
+        line = bankrec.StmtLine(1, 3988.00, "debit", "check", "08/17/2026", "CHECK 219",
+                                "219", False, pos=100)
+        doc = self._hbs(219)
+        doc_line, reason, _c, _cov = bankrec.assign_docs(
+            [doc], [line], txns=self.CLEARED_219, period_end=self.PERIOD_END)
+        self.assertIn("check#", reason[doc.path])
+
+
+# A deposit slip printed before the deposit was posted: the line item is there, but the
+# Total Deposit / Deposit Number / Deposit Date fields print blank.
+UNPOSTED_SLIP = """Payer Property Unit
+Payment
+Reference
+Receipt
+Date Notes Amount
+Tip Top
+Designs
+J.H. Lee Property, LLC
+(Sherman)
+L 1032 09/14/2026 Sep 2026
+Rent
+3,649.06
+Total Items 1
+Total Deposit
+Bank
+Account Number
+Deposit Number
+Deposit Date
+10/5/26, 1:25 PM about:blank
+about:blank 1/1"""
+
+EMPTY_SLIP = """Payer Property Unit Payment Reference
+Receipt
+Date Notes Amount
+No Records
+Total Items 0
+Total Deposit
+Bank
+Account Number
+Deposit Number
+Deposit Date
+10/5/26, 1:25 PM about:blank
+about:blank 1/1"""
+
+
+class SlipWithBlankTotal(unittest.TestCase):
+    def test_printed_total_wins(self):
+        self.assertEqual(bankrec.slip_total("Total Items 2\nTotal Deposit $1,234.56"), 1234.56)
+
+    def test_blank_total_falls_back_to_the_single_line_item(self):
+        self.assertEqual(bankrec.slip_total(UNPOSTED_SLIP), 3649.06)
+
+    def test_blank_total_sums_line_items_when_count_matches(self):
+        text = UNPOSTED_SLIP.replace("3,649.06\nTotal Items 1",
+                                     "3,649.06\nB 1033 09/14/2026 Sep 2026\nRent\n3,649.06\n"
+                                     "Total Items 2")
+        self.assertEqual(bankrec.slip_total(text), 7298.12)
+
+    def test_blank_total_with_item_count_mismatch_is_unknown(self):
+        text = UNPOSTED_SLIP.replace("Total Items 1", "Total Items 2")
+        self.assertIsNone(bankrec.slip_total(text))
+
+    def test_empty_slip_has_no_total(self):
+        self.assertIsNone(bankrec.slip_total(EMPTY_SLIP))
+
+    def test_unposted_slip_is_placed_on_its_deposit_line(self):
+        with mock.patch.object(bankrec, "content_text", lambda p, m: (UNPOSTED_SLIP, False)):
+            [doc] = bankrec.profile_support(["7.pdf"], "off")
+        self.assertTrue(doc.is_slip)
+        line = bankrec.StmtLine(1, 3649.06, "credit", "deposit", "09/15/2026", "DEPOSIT",
+                                None, False, pos=100)
+        doc_line, reason, _c, _cov = bankrec.assign_docs([doc], [line])
+        self.assertIn(doc.path, doc_line)
+        self.assertIn("slip-total", reason[doc.path])

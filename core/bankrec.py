@@ -214,8 +214,20 @@ def amounts_in(text):
     return out
 
 def slip_total(text):
+    """The deposit total on a deposit slip, or None. A slip printed before its deposit was
+    posted carries the line items but prints Total Deposit / Deposit Number / Deposit Date
+    blank; for that one, the total is the sum of the line items - but only when the count of
+    amounts above 'Total Items N' is exactly N, so a stray figure can't invent a total."""
     m = re.search(r"Total Deposit\s*\$?\s*([\d,]+\.\d{2})", text, re.I)
-    return round(float(m.group(1).replace(",", "")), 2) if m else None
+    if m:
+        return round(float(m.group(1).replace(",", "")), 2)
+    m = re.search(r"Total Items\s+(\d+)\s*\n\s*Total Deposit\b", text, re.I)
+    if not m or int(m.group(1)) < 1:
+        return None
+    items = re.findall(AMT, text[:m.start()])
+    if len(items) != int(m.group(1)):
+        return None
+    return round(sum(float(x.replace(",", "")) for x in items), 2)
 
 def slip_date(text):
     """The deposit date printed on a deposit slip, as a datetime (or None). Prefers the
@@ -247,11 +259,37 @@ def vendor_keys(text):
     return {t for t in toks if len(t) >= 4 and t not in VENDOR_STOP}
 
 # ---------------------------------------------------------------- rec report
+# A rec row is "date  tran  payee  amount [cleared-date]". A long payee name wraps in the PDF's
+# text layer, pushing the amount onto its own line with the rest of the name in between, so the
+# one-line form matches only some rows. _REC_ROW is the whole row; _REC_HEAD is its start with
+# the amount still to come; _REC_TAIL is that amount, alone on a later line.
+_REC_ROW = re.compile(r"(\d{2}/\d{2}/\d{4})\s+(\S+)\s+(.*?)\s*(" + AMT + r")(\s+\d{2}/\d{2}/\d{4})?\s*$")
+_REC_HEAD = re.compile(r"(\d{2}/\d{2}/\d{4})\s+(\S+)\s+(.*)$")
+_REC_TAIL = re.compile(r"^(" + AMT + r")(\s+\d{2}/\d{2}/\d{4})?\s*$")
+# How many name-continuation lines to carry before giving up. Bounded so a stray amount further
+# down the page - a section total, the next block - can never be glued onto a dangling row.
+_REC_WRAP_MAX = 3
+
 def parse_rec(path):
     txt = text_layer(path)
     if not txt:
-        return {"checks": [], "deposits": [], "difference": None, "error": "no text"}
+        return {"checks": [], "deposits": [], "outstanding_checks": [],
+                "difference": None, "error": "no text"}
     section, checks, deposits, difference = None, [], [], None
+    outstanding = []
+    pending = None            # (date, tran, name-so-far, continuation lines used)
+
+    def emit(date, tran, notes, amount_text):
+        amount = round(float(amount_text.replace(",", "")), 2)
+        if section == "outstanding":
+            digits = re.sub(r"\D", "", tran)
+            if digits:        # only the NUMBER identifies the invoices that did not clear
+                outstanding.append(int(digits))
+            return
+        (deposits if section == "deposits" else checks).append(
+            {"date": date, "tran": tran, "notes": notes.strip(), "amount": amount,
+             "type": "deposit" if section == "deposits" else "check"})
+
     for raw in txt.splitlines():
         ln = raw.strip()
         low = ln.lower()
@@ -260,29 +298,44 @@ def parse_rec(path):
             if m:
                 difference = m.group(0)
         if low.startswith("cleared checks"):
-            section = "checks"; continue
+            section, pending = "checks", None; continue
         if low.startswith("cleared deposits"):
-            section = "deposits"; continue
+            section, pending = "deposits", None; continue
         if low.startswith("cleared other") or low.startswith("total cleared") \
            or low.startswith("outstanding") or low.startswith("plus:") \
            or low.startswith("less:") or low.startswith("reconciled"):
             if low.startswith("cleared other"):
                 section = "other"
-            elif section in ("checks", "deposits") and low.startswith("total cleared"):
-                section = None
+            elif low.startswith("outstanding checks"):
+                section = "outstanding"      # written but not yet presented - never cleared here
+            elif section == "outstanding" or (section in ("checks", "deposits")
+                                              and low.startswith("total cleared")):
+                section = None               # any following header closes the outstanding list
+            pending = None                   # a header ends any row still waiting for its amount
             continue
-        if section in ("checks", "deposits"):
-            m = re.match(r"(\d{2}/\d{2}/\d{4})\s+(\S+)\s+(.*?)\s*(" + AMT + r")(\s+\d{2}/\d{2}/\d{4})?\s*$", ln)
-            if m:
-                rec = {
-                    "date": m.group(1),
-                    "tran": m.group(2),
-                    "notes": m.group(3).strip(),
-                    "amount": round(float(m.group(4).replace(",", "")), 2),
-                    "type": "deposit" if section == "deposits" else "check",
-                }
-                (deposits if section == "deposits" else checks).append(rec)
-    return {"checks": checks, "deposits": deposits, "difference": difference, "error": None}
+        if section in ("checks", "deposits", "outstanding"):
+            m = _REC_ROW.match(ln)
+            if m:                                     # the whole row on one line
+                pending = None
+                emit(m.group(1), m.group(2), m.group(3), m.group(4))
+                continue
+            tail = _REC_TAIL.match(ln)
+            if tail and pending:                      # the amount its payee name pushed down
+                emit(pending[0], pending[1], pending[2], tail.group(1))
+                pending = None
+                continue
+            head = _REC_HEAD.match(ln)
+            if head:                                  # a row whose amount is still to come
+                pending = (head.group(1), head.group(2), head.group(3), 0)
+                continue
+            if pending and ln and pending[3] < _REC_WRAP_MAX:
+                pending = (pending[0], pending[1], pending[2] + " " + ln, pending[3] + 1)
+            else:
+                pending = None
+        else:
+            pending = None
+    return {"checks": checks, "deposits": deposits, "outstanding_checks": outstanding,
+            "difference": difference, "error": None}
 
 def to_date(s):
     try:
@@ -650,8 +703,17 @@ def _placement_rank(item):
             gap = abs((_add_months(d.doc_date, d.lag_months) - ld).days)
     return (-sc, gap, not d.verified, d.path)
 
-def score_doc_line(d, sl):
-    """How strongly support doc `d` evidences statement line `sl`."""
+def score_doc_line(d, sl, check_no=None):
+    """How strongly support doc `d` evidences statement line `sl`. `check_no` overrides the
+    line's own number - used to lend an unnumbered line the check number the rec knows it is."""
+    sl_check = check_no if check_no is not None else sl.check_no
+    # A check number on BOTH sides that disagrees is decisive: one physical check cannot carry
+    # two numbers, so no amount coincidence can make this doc evidence for this line. Scoring
+    # only rewarded agreement, so a $20,000.00 invoice still out on check #10626 scored a clean
+    # "content" hit against cleared check #220 to another payee - and landed there, graded high.
+    if sl_check and sl_check.isdigit() and d.check_numbers \
+       and int(sl_check) not in d.check_numbers:
+        return 0, []
     amt = sl.amount
     s, why = 0, []
     amount_hit = False
@@ -677,8 +739,8 @@ def score_doc_line(d, sl):
         s += 4; why.append("file$")
     elif int(amt) in d.fname_ints:
         s += 3; why.append("file#")
-    if sl.check_no and sl.check_no.isdigit():
-        cn = int(sl.check_no)
+    if sl_check and sl_check.isdigit():
+        cn = int(sl_check)
         if cn in d.check_numbers:        # user-entered check # -> strongest single signal
             s += 8; why.append("check#")
         elif cn in d.fname_ints:         # legacy: the number happened to be in the filename
@@ -687,11 +749,13 @@ def score_doc_line(d, sl):
         s += 2; why.append("vendor")
     return s, why
 
-def assign_docs(docs, stmt, txns=None, raw="", period_end=None):
+def assign_docs(docs, stmt, txns=None, raw="", period_end=None, outstanding_checks=None):
     """Map each support doc to the statement line it belongs to.
     Returns doc_line, reason, conf (all keyed by doc path) and covered (set of
     statement seqs that a doc was placed on). `period_end`, when given, holds out any
-    invoice dated after it - a future bill can't have cleared this period."""
+    invoice dated after it - a future bill can't have cleared this period.
+    `outstanding_checks`, the check numbers the rec itself reports as unpaid, holds out
+    the invoices those checks paid - they cannot have cleared this period either."""
     # Settlements (one bank line covering several cleared rec items) with their members, from the
     # posted rec report - used by pass 1b to group the supporting files onto them.
     settlements = [(sl, ms) for sl, ms in settlement_rec_members(stmt, txns) if len(ms) >= 2] if txns else []
@@ -706,6 +770,17 @@ def assign_docs(docs, stmt, txns=None, raw="", period_end=None):
     if future:
         _fp = {d.path for d in future}
         docs = [d for d in docs if d.path not in _fp]
+    # An invoice paid by a check the rec itself lists as OUTSTANDING did not clear this period,
+    # whatever its amount happens to match. Held out like a future-dated bill, and for the same
+    # reason: an amount coincidence cannot outrank the rec's own statement that the check is
+    # unpaid. This is the second guard on the same failure - a bank line carrying no check
+    # number (a wire, an ACH) gives the contradiction veto in score_doc_line nothing to compare.
+    still_out = {int(n) for n in (outstanding_checks or ())}
+    held = [d for d in docs
+            if still_out and not d.is_slip and (d.check_numbers & still_out)] if still_out else []
+    if held:
+        _hp = {d.path for d in held}
+        docs = [d for d in docs if d.path not in _hp]
     # split settlements by sign: a slip can only join a CREDIT (deposit)
     # settlement, an invoice only a DEBIT one - so a slip's filename number can't
     # be mis-grouped onto a same-numbered debit line.
@@ -717,6 +792,30 @@ def assign_docs(docs, stmt, txns=None, raw="", period_end=None):
 
     doc_line, reason, conf = {}, {}, {}
     used_line = set()
+
+    # A line in the statement's "other debits" section carries no check number - a wire, an ACH,
+    # an electronic payment - but the rec knows which check cleared for that amount. When
+    # exactly ONE cleared check has the line's amount, the line IS that check, so lend it the
+    # number. Ambiguous amounts lend nothing: two cleared checks of 3,988.00 could be either.
+    # This is what the contradiction veto needs on a recurring same-amount vendor - HBS Services
+    # bills 3,988.00 every month, and NEXT month's invoice was sitting in the folder matching
+    # the amount exactly, with no number on the line to say it was a different check.
+    inferred_check = {}
+    if txns:
+        settle_seqs = {sl.seq for sl, _ms in settlements}
+        by_amount = {}
+        for t in txns:
+            if t["type"] != "check":
+                continue
+            digits = re.sub(r"\D", "", t["tran"] or "")
+            if digits:
+                by_amount.setdefault(round(t["amount"], 2), set()).add(digits)
+        for sl in stmt:
+            if sl.sign != "debit" or sl.check_no or sl.seq in settle_seqs:
+                continue                      # a real batch's amount is a SUM, not one check
+            cands = by_amount.get(round(sl.amount, 2), ())
+            if len(cands) == 1:
+                inferred_check[sl.seq] = next(iter(cands))
 
     # pass 1 - settlement-named files (your convention): a file named with a
     # settlement's dollar amount belongs to that settlement (grouped there).
@@ -780,7 +879,7 @@ def assign_docs(docs, stmt, txns=None, raw="", period_end=None):
         for sl in pass2_lines:
             if (sl.sign == "credit") != d.is_slip:   # slips->credit, invoices->debit
                 continue
-            sc, why = score_doc_line(d, sl)
+            sc, why = score_doc_line(d, sl, inferred_check.get(sl.seq))
             if sc > 0 and (set(why) - {"vendor", "date", "date~"}):   # need amount/number evidence, not vendor/date alone
                 pairs.append((sc, d, sl, why))
     pairs.sort(key=_placement_rank)
@@ -893,7 +992,7 @@ def assign_docs(docs, stmt, txns=None, raw="", period_end=None):
             for sl in faux:
                 if (sl.sign == "credit") != d.is_slip:
                     continue
-                sc, why = score_doc_line(d, sl)
+                sc, why = score_doc_line(d, sl, inferred_check.get(sl.seq))
                 if sc > 0 and (set(why) - {"vendor", "date", "date~"}):   # amount/number evidence, not vendor/date alone
                     pairs.append((sc, d, sl, why))
         pairs.sort(key=_placement_rank)
@@ -949,6 +1048,8 @@ def assign_docs(docs, stmt, txns=None, raw="", period_end=None):
             conf[d.path] = "low"; reason[d.path] = reason.get(d.path, ["unmatched"])
     for d in future:                     # dated beyond the period -> flagged, carried forward
         reason[d.path] = ["next-period"]; conf[d.path] = "future"
+    for d in held:                       # check still outstanding -> flagged, carried forward
+        reason[d.path] = ["outstanding-check"]; conf[d.path] = "outstanding"
 
     covered = {sl.seq for p, sl in doc_line.items()}
     return doc_line, reason, conf, covered
@@ -1273,7 +1374,8 @@ def build(folder, out_path=None, out_dir=None, order="grouped", ocr_mode="auto",
             % len(sidecar))
     docs = profile_support(buckets["support"], ocr_mode, sidecar)
     period_end = period_last_day(period)
-    doc_line, reason, conf, covered = assign_docs(docs, stmt, txns, raw_stmt, period_end)
+    doc_line, reason, conf, covered = assign_docs(docs, stmt, txns, raw_stmt, period_end,
+                                                  parsed.get("outstanding_checks"))
     # Only STRONG evidence (verified amount, check number, or an exact sum) earns a place in the
     # PDF. Pull back any weak "closest guess" invoice - one fit to a line by vendor name or
     # filename alone, with no amount confirmation - so it's left out of the PDF, flagged, and
@@ -1289,6 +1391,11 @@ def build(folder, out_path=None, out_dir=None, order="grouped", ocr_mode="auto",
         say("    Holding %d invoice(s) dated after %s for next month: %s"
             % (len(future_docs), period or "the period",
                ", ".join(sorted(os.path.basename(d.path) for d in future_docs))))
+    held_docs = [d for d in docs if reason.get(d.path, [None])[0] == "outstanding-check"]
+    if held_docs and not property_deposits_only(name):
+        say("    Holding %d invoice(s) whose check is still outstanding on the rec: %s"
+            % (len(held_docs),
+               ", ".join(sorted(os.path.basename(d.path) for d in held_docs))))
     ordered, unplaced = order_docs(docs, doc_line, order)
     # Deposits-only property (e.g. Solair): its packet carries no expense invoices - the expenses
     # are detailed in the Check register - so keep every invoice OUT of the PDF even if it matched.
@@ -1502,6 +1609,8 @@ def build(folder, out_path=None, out_dir=None, order="grouped", ocr_mode="auto",
                 tag = "  [weak match only (~%.2f, no amount confirmation) - left OUT, carried forward]" % weak_line[d.path].amount
             elif reason.get(d.path, [""])[0] == "next-period":
                 tag = "  [dated after %s - left OUT, carried to next month]" % (period or "the period")
+            elif reason.get(d.path, [""])[0] == "outstanding-check":
+                tag = "  [check still outstanding on the rec - left OUT, carried to next month]"
             elif d.is_slip:
                 tag = "  [kept in PDF - slip]"
             else:
