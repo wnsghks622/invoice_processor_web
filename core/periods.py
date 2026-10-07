@@ -54,6 +54,33 @@ def _clamp(day: int, year: int, month: int) -> int:
     return max(1, min(day, last))
 
 
+# Sunday-start weeks, because that is how a wall calendar in a US leasing office reads.
+# This is a display convention only: nothing in resolve_window is weekday-based (see the
+# module docstring - "week 3" means the 15th-21st, not "the third Monday"), so changing it
+# moves columns around and changes no timing.
+WEEKDAY_HEADS = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+
+
+def month_grid(period: str) -> list:
+    """The period laid out as weeks of seven cells, for a calendar grid.
+
+    Each cell is an ISO date string, or None for the padding before the 1st and after the
+    last day. Padding is deliberately blank rather than the neighbouring month's dates: a
+    cell that shows 31 July on the August calendar invites acting on the wrong month, and
+    those days have no instances here anyway.
+
+    Row count follows the month - four for a February that starts on a Sunday, six when a
+    31-day month starts late in the week - so no day is ever dropped off the bottom.
+    """
+    year, month = parse_period(period)
+    last = calendar.monthrange(year, month)[1]
+    lead = (datetime.date(year, month, 1).weekday() + 1) % 7   # Monday=0 -> Sunday=0
+    cells = [None] * lead + [datetime.date(year, month, d).isoformat()
+                             for d in range(1, last + 1)]
+    cells += [None] * (-len(cells) % 7)
+    return [cells[i:i + 7] for i in range(0, len(cells), 7)]
+
+
 def resolve_window(rule: str, period: str,
                    due_day: Optional[int] = None,
                    due_spread: Optional[int] = None) -> Optional[Tuple[str, str]]:

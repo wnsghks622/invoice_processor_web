@@ -23,10 +23,52 @@
         <option value="{{ m }}" {% if m == period %}selected{% endif %}>{{ m }}</option>
       {% endfor %}
     </select>
+    {# In this form rather than beside it so View carries the filter. Open therefore posts
+       it too, which is why month_open threads it back into its redirect. #}
+    <select name="property_id">
+      <option value="">All properties</option>
+      {% for p in properties %}
+        <option value="{{ p.id }}" {% if p.id == chosen_property %}selected{% endif %}>{{ p.name }}</option>
+      {% endfor %}
+    </select>
     <button class="btn" type="submit">View</button>
     <button class="btn" type="submit"
             formmethod="post" formaction="{{ url_for('month_open') }}">Open</button>
   </form>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <div class="panel-title">Calendar</div>
+    <div class="panel-note">chips sit on the day a row is due by</div>
+  </div>
+  <table class="cal">
+    <thead>
+      <tr>{% for d in weekday_heads %}<th>{{ d }}</th>{% endfor %}</tr>
+    </thead>
+    <tbody>
+      {% for week in weeks %}
+      <tr>
+        {% for day in week %}
+          {% if day %}
+          <td class="cal-day{% if day in shaded_days %} cal-window{% endif %}{% if day == today_iso %} cal-today{% endif %}"
+              data-day="{{ day }}">
+            <div class="cal-date">{{ day[8:]|int }}</div>
+            {% for r in by_day.get(day, []) %}
+              {# Links to the row instead of repeating its controls: Skip needs a typed
+                 reason, which does not fit a day cell. #}
+              <a class="cal-chip {% if r.missing %}attn{% elif r.state != 'open' %}dim{% endif %}"
+                 href="#inst-{{ r.id }}" title="{{ r.label }}">{{ r.label }}</a>
+            {% endfor %}
+          </td>
+          {% else %}
+          <td class="cal-day cal-pad"></td>
+          {% endif %}
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
 </section>
 
 <section class="panel">
@@ -60,12 +102,19 @@
 
 {% if not groups %}
 <section class="panel">
+  {% if chosen_property_name %}
+  <p class="muted">
+    Nothing scheduled for {{ chosen_property_name }} in {{ period }}.
+    <a href="{{ url_for('month_page', period=period) }}">Show all properties</a>
+  </p>
+  {% else %}
   <p class="muted">
     Nothing scheduled for {{ period }}. Either the month hasn't been opened yet — use
     <strong>Open {{ period }}</strong> above — or no expectations have been learned. Learned
     expectations need <code>vendor_id</code> and <code>invoice_date_iso</code> populated; see
     the backfill steps in the README.
   </p>
+  {% endif %}
 </section>
 {% endif %}
 
@@ -81,7 +130,8 @@
     </thead>
     <tbody>
     {% for r in rows %}
-      <tr class="{% if r.missing %}attn{% elif r.state != 'open' %}dim{% endif %}">
+      {# id is the calendar chips' jump target; :target highlights it on arrival. #}
+      <tr id="inst-{{ r.id }}" class="{% if r.missing %}attn{% elif r.state != 'open' %}dim{% endif %}">
         <td>{{ r.label }}</td>
         <td class="date">{{ r.due_from }}{% if r.due_to != r.due_from %} – {{ r.due_to }}{% endif %}</td>
         <td>

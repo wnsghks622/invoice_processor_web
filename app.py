@@ -516,24 +516,85 @@ def month_page():
     # {"id", "name", "code", "aliases"}, so p["canonical_name"] is a KeyError here even
     # though canonical_name IS the column name in the table and in all_vendors()' output.
     # app.py:391 already reads p["name"].
-    prop_names = {p["id"]: p["name"] for p in db.all_properties()}
+    properties = db.all_properties()
+    prop_names = {p["id"]: p["name"] for p in properties}
     vendor_names = {v["id"]: (v.get("canonical_name") or v["short_name"])
                     for v in db.all_vendors()}
 
+    # Unparseable or unknown ids fall back to showing everything rather than flashing.
+    # A filter is a view, not a write, and a hand-edited URL that silently shows all is
+    # less confusing than an error on a page you can already fix with the dropdown.
+    try:
+        chosen = int(request.args.get("property_id") or 0) or None
+    except ValueError:
+        chosen = None
+
     groups = {}
+    shown = []
     for inst in ledger.instances_for_period(period):
+        # An obligation with no property applies everywhere, so it stays visible under a
+        # filter - the filter reads as "this property, plus what applies to all".
+        if chosen is not None and inst["property_id"] not in (None, chosen):
+            continue
         inst["missing"] = ledger.is_missing(inst, today)
         inst["label"] = inst["title"] or vendor_names.get(inst["vendor_id"], "(vendor)")
         group = prop_names.get(inst["property_id"], "All properties")
         groups.setdefault(group, []).append(inst)
+        shown.append(inst)
 
     return render_template("month.html",
                            period=period,
                            groups=sorted(groups.items()),
                            months=state.month_options(),
-                           properties=db.all_properties(),
-                           missing_count=sum(1 for g in groups.values()
-                                             for i in g if i["missing"]))
+                           properties=properties,
+                           chosen_property=chosen,
+                           chosen_property_name=prop_names.get(chosen, ""),
+                           weekday_heads=periods.WEEKDAY_HEADS,
+                           weeks=periods.month_grid(period),
+                           today_iso=today.isoformat(),
+                           by_day=_chips_by_day(shown),
+                           shaded_days=_shaded_days(shown),
+                           missing_count=sum(1 for i in shown if i["missing"]))
+
+
+def _chips_by_day(instances):
+    """Bucket instances onto the day they are due by, for the calendar grid.
+
+    Keyed on due_to rather than due_from because due_to is the day is_missing judges
+    against - a chip on the first day of a week-long window would go grey while the row
+    below it went red.
+    """
+    by_day = {}
+    for inst in instances:
+        if inst.get("due_to"):
+            by_day.setdefault(inst["due_to"], []).append(inst)
+    return by_day
+
+
+# Which windows are worth tinting. Both bounds were set against the real ledger rather
+# than picked: at a 14-day cap, August's two 13-day windows alone tinted 26 of 31 cells,
+# which reads exactly like tinting the whole month. And a one-day window has no run-up to
+# show - the chip already marks that day - so shading it only tints every cell that has a
+# chip in it. What is left is the case the tint exists for: "this lands somewhere in here".
+SHADE_MIN_DAYS = 2
+SHADE_MAX_DAYS = 7
+
+
+def _shaded_days(instances):
+    """Days covered by some still-open multi-day window, so the grid shows the run-up to a
+    deadline and not just the deadline. Closed rows are left out: their window is history."""
+    days = set()
+    for inst in instances:
+        if inst.get("state") != "open" or not inst.get("due_from") or not inst.get("due_to"):
+            continue
+        start = datetime.date.fromisoformat(inst["due_from"])
+        end = datetime.date.fromisoformat(inst["due_to"])
+        span = (end - start).days + 1
+        if not SHADE_MIN_DAYS <= span <= SHADE_MAX_DAYS:
+            continue
+        for n in range(span):
+            days.add((start + datetime.timedelta(days=n)).isoformat())
+    return days
 
 
 @app.route("/month/open", methods=["POST"])
@@ -561,7 +622,11 @@ def month_open():
     flash(f"Opened {period}: {result['created']} new, {result['existing']} already there. "
           f"Learned {learned['created']} new expectation"
           f"{'' if learned['created'] == 1 else 's'}.")
-    return redirect(url_for("month_page", period=period))
+    # The property filter lives in the same form as this button, so it is submitted here
+    # too. This redirect uses url_for rather than the referrer, so without carrying the
+    # filter across, pressing Open would silently reset the page to all properties.
+    return redirect(url_for("month_page", period=period,
+                            property_id=(request.form.get("property_id") or "").strip() or None))
 
 
 def _instance_or_redirect(instance_id):

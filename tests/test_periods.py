@@ -325,5 +325,63 @@ class CadenceRecentlyChanged(unittest.TestCase):
             ["2026-06", "2026-07", "2026-08"]))
 
 
+class MonthGrid(unittest.TestCase):
+    """The day layout the Month page's calendar renders.
+
+    Kept here rather than in the template because "which cell does the 1st sit in" is
+    arithmetic, and a template cannot be asked whether it dropped a day.
+    """
+
+    def test_every_day_appears_exactly_once_and_in_order(self):
+        days = [d for week in periods.month_grid("August 2026") for d in week if d]
+        self.assertEqual(len(days), 31)
+        self.assertEqual(days[0], "2026-08-01")
+        self.assertEqual(days[-1], "2026-08-31")
+        self.assertEqual(days, sorted(days))
+
+    def test_every_week_is_seven_cells(self):
+        for period in ("February 2026", "August 2026", "November 2026"):
+            with self.subTest(period=period):
+                for week in periods.month_grid(period):
+                    self.assertEqual(len(week), 7)
+
+    def test_padding_puts_the_first_of_the_month_on_its_weekday(self):
+        # 2026-08-01 is a Saturday, so with a Sunday-start week the first row holds six
+        # blanks and then the 1st. Getting this wrong shifts every chip by a column.
+        first_week = periods.month_grid("August 2026")[0]
+        self.assertEqual(first_week[:6], [None] * 6)
+        self.assertEqual(first_week[6], "2026-08-01")
+
+    def test_a_month_starting_on_the_first_weekday_has_no_leading_blank(self):
+        # 2026-02-01 is a Sunday.
+        self.assertEqual(periods.month_grid("February 2026")[0][0], "2026-02-01")
+
+    def test_trailing_cells_are_blank_not_next_months_days(self):
+        # A calendar that spills into September makes a day belong to two months.
+        last_week = periods.month_grid("February 2026")[-1]
+        self.assertEqual(last_week[0], "2026-02-22")
+        self.assertEqual(last_week[-1], "2026-02-28")
+
+    def test_a_non_leap_february_that_fits_in_four_rows(self):
+        grid = periods.month_grid("February 2026")
+        self.assertEqual(len(grid), 4)
+
+    def test_a_leap_february_gains_a_day(self):
+        days = [d for week in periods.month_grid("February 2028") for d in week if d]
+        self.assertEqual(len(days), 29)
+        self.assertEqual(days[-1], "2028-02-29")
+
+    def test_a_month_that_needs_six_rows(self):
+        # 2026-05-01 is a Friday: 31 days + 5 leading blanks = 36 cells, which cannot fit
+        # in five rows. A hardcoded five-row grid silently loses the last day.
+        grid = periods.month_grid("May 2026")
+        self.assertEqual(len(grid), 6)
+        self.assertIn("2026-05-31", [d for week in grid for d in week])
+
+    def test_a_bad_period_raises_rather_than_rendering_an_empty_grid(self):
+        with self.assertRaises(ValueError):
+            periods.month_grid("not-a-month")
+
+
 if __name__ == "__main__":
     unittest.main()

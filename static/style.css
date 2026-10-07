@@ -260,6 +260,38 @@ table.props tr.dim td, table.props tr.dim .num { color: var(--faint); }
   background: var(--surface); border: 1px solid var(--line); padding: .05rem .4rem;
   border-radius: 5px; }
 
+/* =========================================================== month calendar grid */
+
+table.cal { width: 100%; border-collapse: collapse; table-layout: fixed; }
+table.cal th { padding: .45rem .5rem; font-size: .68rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .04em; color: var(--muted); text-align: left;
+  border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
+.cal-day { vertical-align: top; height: 82px; padding: .35rem .4rem;
+  border: 1px solid var(--line-faint); }
+.cal-pad { background: var(--surface-2); border-color: var(--line-faint); }
+.cal-date { font-size: .74rem; color: var(--muted); font-family: var(--mono);
+  margin-bottom: .25rem; }
+/* The run-up to a deadline. Only genuine multi-day windows of a week or less are tinted -
+   see SHADE_MIN_DAYS / SHADE_MAX_DAYS in app.py. */
+.cal-window { background: var(--surface-2); }
+.cal-today { box-shadow: inset 0 0 0 2px var(--accent-line); }
+.cal-today .cal-date { color: var(--accent); font-weight: 600; }
+
+.cal-chip { display: block; font-size: .74rem; line-height: 1.25; padding: .16rem .35rem;
+  margin-bottom: .2rem; border-radius: 5px; background: var(--accent-soft);
+  color: var(--accent); border: 1px solid var(--accent-line);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cal-chip:hover { text-decoration: none; background: var(--accent-line); }
+.cal-chip.attn { background: var(--danger-soft); color: var(--danger);
+  border-color: var(--danger-line); }
+.cal-chip.attn:hover { background: var(--danger-bg); }
+.cal-chip.dim { background: var(--surface); color: var(--faint); border-color: var(--line); }
+.cal-chip.dim:hover { background: var(--surface); }
+
+/* Landing spot for a chip's jump. Without it you arrive at a table of near-identical rows
+   with no idea which one you were sent to. */
+table.props tr:target td { background: var(--accent-soft); }
+
 /* editable tables (properties / vendors) */
 table.props.editable { margin-bottom: 0; }
 table.props.editable td { vertical-align: middle; }

@@ -837,6 +837,225 @@ class MonthPage(unittest.TestCase):
         self.assertTrue(after["satisfied_by"].startswith("invoice:"))
 
 
+def _cell(html, iso):
+    """The one calendar cell for an ISO day, or '' if the grid has no such cell.
+
+    Tests assert against a single cell rather than the whole page because "the chip is
+    somewhere in the HTML" cannot tell a chip on the 12th from a chip on the 1st, which is
+    the only thing a calendar has to get right.
+    """
+    import re
+    m = re.search(r'<td[^>]*data-day="%s"[^>]*>.*?</td>' % re.escape(iso), html, re.S)
+    return m.group(0) if m else ""
+
+
+class MonthCalendar(unittest.TestCase):
+    """The grid above the tables: which day a row lands on, and what it links to."""
+
+    def setUp(self):
+        _conn.execute("DELETE FROM obligation_instance")
+        _conn.execute("DELETE FROM obligation")
+        _conn.execute("DELETE FROM properties")
+        _conn.execute("DELETE FROM invoices")
+        _conn.execute("DELETE FROM vendors")
+        _conn.execute("INSERT INTO properties (id, canonical_name) VALUES (1, 'Kenmore Plaza')")
+        self.client = app.app.test_client()
+
+    def _august(self):
+        return self.client.get("/month?period=August+2026").get_data(as_text=True)
+
+    def test_the_grid_holds_every_day_of_the_month(self):
+        html = self._august()
+        for day in (1, 12, 31):
+            with self.subTest(day=day):
+                self.assertNotEqual(_cell(html, "2026-08-%02d" % day), "")
+        # September must not leak into August's grid.
+        self.assertEqual(_cell(html, "2026-09-01"), "")
+
+    def test_a_chip_lands_in_the_cell_for_its_due_date(self):
+        from core import ledger
+        ledger.add_obligation(kind="ACTION", title="Call Michelle", property_id=1,
+                              window_rule="day:12", cadence="monthly")
+        ledger.open_period("August 2026")
+        html = self._august()
+        self.assertIn("Call Michelle", _cell(html, "2026-08-12"))
+        self.assertNotIn("Call Michelle", _cell(html, "2026-08-11"))
+
+    def test_a_ranged_window_puts_the_chip_on_the_deadline_not_the_start(self):
+        # week:2 is the 8th-14th. is_missing judges against due_to, so the chip has to sit
+        # on the day the row actually becomes late.
+        from core import ledger
+        ledger.add_obligation(kind="ACTION", title="Trash pickup", property_id=1,
+                              window_rule="week:2", cadence="monthly")
+        ledger.open_period("August 2026")
+        html = self._august()
+        self.assertIn("Trash pickup", _cell(html, "2026-08-14"))
+        self.assertNotIn("Trash pickup", _cell(html, "2026-08-08"))
+
+    def test_the_chip_links_to_a_row_that_exists_on_the_page(self):
+        # A chip anchored at an id no row carries is a link that scrolls nowhere.
+        from core import ledger
+        ledger.add_obligation(kind="ACTION", title="Call Michelle", property_id=1,
+                              window_rule="day:12", cadence="monthly")
+        ledger.open_period("August 2026")
+        inst_id = ledger.instances_for_period("August 2026")[0]["id"]
+        html = self._august()
+        self.assertIn('href="#inst-%d"' % inst_id, _cell(html, "2026-08-12"))
+        self.assertIn('id="inst-%d"' % inst_id, html)
+
+    def test_an_overdue_chip_is_flagged_on_the_grid(self):
+        # day:1 in August 2026 is overdue for any today after that date, so this cannot
+        # go stale. Without the flag the grid shows a late row exactly like an early one.
+        from core import ledger
+        ledger.add_obligation(kind="ACTION", title="Rent posting", property_id=1,
+                              window_rule="day:1", cadence="monthly")
+        ledger.open_period("August 2026")
+        self.assertIn("attn", _cell(self._august(), "2026-08-01"))
+
+    def test_a_closed_row_is_dimmed_rather_than_flagged(self):
+        from core import ledger
+        ledger.add_obligation(kind="ACTION", title="Rent posting", property_id=1,
+                              window_rule="day:1", cadence="monthly")
+        ledger.open_period("August 2026")
+        inst = ledger.instances_for_period("August 2026")[0]
+        ledger.set_instance_state(inst["id"], "done")
+        cell = _cell(self._august(), "2026-08-01")
+        self.assertIn("dim", cell)
+        self.assertNotIn("attn", cell)
+
+    def test_a_short_window_shades_the_days_it_covers(self):
+        from core import ledger
+        ledger.add_obligation(kind="ACTION", title="Water bill", property_id=1,
+                              window_rule="day:8-10", cadence="monthly")
+        ledger.open_period("August 2026")
+        html = self._august()
+        for day in ("2026-08-08", "2026-08-09", "2026-08-10"):
+            with self.subTest(day=day):
+                self.assertIn("cal-window", _cell(html, day))
+        self.assertNotIn("cal-window", _cell(html, "2026-08-11"))
+
+    def test_a_single_day_window_shades_nothing(self):
+        # A one-day window has no run-up to show, and the chip already marks that day.
+        # Shading it too just tints every cell that has a chip in it.
+        from core import ledger
+        ledger.add_obligation(kind="ACTION", title="Call Michelle", property_id=1,
+                              window_rule="day:12", cadence="monthly")
+        ledger.open_period("August 2026")
+        cell = _cell(self._august(), "2026-08-12")
+        self.assertIn("Call Michelle", cell)
+        self.assertNotIn("cal-window", cell)
+
+    def test_a_window_longer_than_a_week_shades_nothing(self):
+        # Measured against the real ledger: two 13-day windows on their own tinted 26 of
+        # August's 31 cells, which is indistinguishable from tinting the whole month.
+        from core import ledger
+        ledger.add_obligation(kind="EXPECT", title="Citizens Bank", property_id=1,
+                              window_rule="day:15-27", cadence="monthly")
+        ledger.open_period("August 2026")
+        self.assertNotIn("cal-window", self._august())
+
+    def test_a_whole_month_window_shades_nothing(self):
+        # A learned expectation with no due_day spans the 1st to the 31st. Shading that
+        # tints every cell in the month, which says nothing at all.
+        from core import ledger
+        ledger.add_obligation(kind="EXPECT", title="Athens", property_id=1,
+                              window_rule="learned", cadence="monthly")
+        ledger.open_period("August 2026")
+        html = self._august()
+        self.assertNotIn("cal-window", html)
+        # The chip itself still has to be somewhere - month end, its due_to.
+        self.assertIn("Athens", _cell(html, "2026-08-31"))
+
+    def test_todays_cell_is_marked(self):
+        # Derived from today rather than hardcoded, so the assertion cannot expire.
+        from core import periods
+        today = datetime.date.today()
+        period = periods.format_period(today.year, today.month)
+        html = self.client.get("/month", query_string={"period": period}).get_data(as_text=True)
+        self.assertIn("cal-today", _cell(html, today.isoformat()))
+
+
+class MonthPropertyFilter(unittest.TestCase):
+    """?property_id narrows the whole page - grid and tables both."""
+
+    def setUp(self):
+        _conn.execute("DELETE FROM obligation_instance")
+        _conn.execute("DELETE FROM obligation")
+        _conn.execute("DELETE FROM properties")
+        _conn.execute("DELETE FROM invoices")
+        _conn.execute("DELETE FROM vendors")
+        _conn.execute("INSERT INTO properties (id, canonical_name) VALUES (1, 'Kenmore Plaza')")
+        _conn.execute("INSERT INTO properties (id, canonical_name) VALUES (2, 'Solair')")
+        self.client = app.app.test_client()
+
+        from core import ledger
+        ledger.add_obligation(kind="ACTION", title="Kenmore inspection", property_id=1,
+                              window_rule="day:12", cadence="monthly")
+        ledger.add_obligation(kind="ACTION", title="Solair inspection", property_id=2,
+                              window_rule="day:12", cadence="monthly")
+        ledger.open_period("August 2026")
+
+    def _filtered(self, property_id):
+        return self.client.get("/month", query_string={"period": "August 2026",
+                                                       "property_id": property_id}
+                               ).get_data(as_text=True)
+
+    def test_the_filter_drops_other_properties_from_the_tables(self):
+        html = self._filtered(1)
+        self.assertIn("Kenmore inspection", html)
+        self.assertNotIn("Solair inspection", html)
+
+    def test_the_filter_drops_other_properties_from_the_grid(self):
+        # The grid and the tables are built from the same list, but a filter applied to
+        # only one of them leaves chips pointing at rows that are no longer rendered.
+        cell = _cell(self._filtered(1), "2026-08-12")
+        self.assertIn("Kenmore inspection", cell)
+        self.assertNotIn("Solair inspection", cell)
+
+    def test_an_unscoped_reminder_survives_the_filter(self):
+        # A reminder attached to no property applies everywhere, so it is still your work
+        # while looking at one building.
+        from core import ledger
+        ledger.add_obligation(kind="ACTION", title="Mail the rent statements",
+                              window_rule="day:12", cadence="monthly")
+        ledger.open_period("August 2026")
+        self.assertIn("Mail the rent statements", self._filtered(1))
+
+    def test_the_missing_tally_counts_only_what_is_on_screen(self):
+        # Both seeded rows are due 2026-08-12 and today only moves forward, so both are
+        # permanently overdue. Filtering to one property has to halve the tally, or the
+        # header contradicts the page under it.
+        self.assertIn("2 possibly missing",
+                      self.client.get("/month?period=August+2026").get_data(as_text=True))
+        self.assertIn("1 possibly missing", self._filtered(1))
+
+    def test_the_dropdown_comes_back_on_the_property_you_chose(self):
+        # A filter that renders as "All properties" while filtering is worse than none.
+        import re
+        html = self._filtered(2)
+        select = re.search(r'<select name="property_id".*?</select>', html, re.S).group(0)
+        self.assertRegex(select, r'<option value="2"[^>]*selected')
+        self.assertNotRegex(select, r'<option value="1"[^>]*selected')
+
+    def test_a_property_with_nothing_scheduled_says_so_by_name(self):
+        _conn.execute("INSERT INTO properties (id, canonical_name) VALUES (3, 'Vermont Ave')")
+        self.assertIn("Nothing scheduled for Vermont Ave", self._filtered(3))
+
+    def test_junk_in_the_filter_falls_back_to_showing_everything(self):
+        html = self._filtered("not-an-id")
+        self.assertIn("Kenmore inspection", html)
+        self.assertIn("Solair inspection", html)
+
+    def test_opening_a_month_keeps_the_filter(self):
+        # month_open redirects with url_for rather than back to the referrer, so without an
+        # explicit hand-off the filter is dropped by the one button most likely to be
+        # pressed while a filter is on.
+        resp = self.client.post("/month/open", data={"period": "August 2026",
+                                                     "property_id": "2"})
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn("property_id=2", resp.headers["Location"])
+
+
 class InstanceActions(unittest.TestCase):
     def setUp(self):
         _conn.execute("DELETE FROM obligation_instance")
