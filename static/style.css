@@ -305,9 +305,9 @@ table.invoices th.actions-col { text-align: right; width: 104px; }
 /* Keep the Status column narrow and left-aligned so its tags sit close to BOTH Processed and
    Actions (a wide right-aligned column left a big gap after Processed). The dup "Not a duplicate"
    button is allowed to wrap so it doesn't force the column wide. */
-table.invoices th:nth-child(9), table.invoices td:nth-child(9) { padding-right: .35rem; }
-table.invoices th:nth-child(10), table.invoices td:nth-child(10) { padding-left: .35rem; }
-table.invoices th:nth-child(9) { width: 82px; }
+table.invoices th:nth-child(10), table.invoices td:nth-child(10) { padding-right: .35rem; }
+table.invoices th:nth-child(11), table.invoices td:nth-child(11) { padding-left: .35rem; }
+table.invoices th:nth-child(10) { width: 82px; }
 /* Invoice # column: allow wrapping so one long merged-unit value can't stretch the whole
    column to ~380px (which left a big gap before Property). Numbers have no spaces so they
    never break mid-number; only the trailing unit list wraps. Trim the padding to Property too. */
@@ -318,6 +318,14 @@ table.invoices .mono { font-family: var(--mono); font-size: .8rem; white-space: 
 table.invoices .date { font-family: var(--mono); font-size: .78rem; color: var(--ink-2);
   white-space: nowrap; }
 table.invoices .date.soft { color: var(--faint); }
+/* Mailed: a quiet button while there's nothing to show, the date itself once there is.
+   Sized so the button occupies about the width the date will, and the column doesn't
+   twitch when a row is stamped. */
+table.invoices .date.mailed { width: 92px; }
+table.invoices .mail-btn { font-family: var(--sans); font-size: .72rem; font-weight: 500;
+  padding: .2rem .5rem; color: var(--muted); }
+table.invoices .mail-btn:hover { color: var(--accent); border-color: var(--accent-line);
+  background: var(--accent-soft); }
 table.invoices .cell-vendor { max-width: 230px; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; font-weight: 500; }
 table.invoices .cell-vendor a { color: var(--ink); }

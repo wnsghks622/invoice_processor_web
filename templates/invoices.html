@@ -90,6 +90,7 @@
       <th>Check #</th>
       <th>Invoice date</th>
       <th>Processed</th>
+      <th>Mailed</th>
       <th>Status</th>
       <th class="actions-col">Actions</th>
     </tr>
@@ -124,6 +125,16 @@
         {%- endif -%}
       </td>
       <td class="date soft">{{ inv.date_processed }}</td>
+      {# One click stamps the day the check went out. Once a date exists the button is gone:
+         the date is then only editable from the edit panel, so it can't be wiped by a stray
+         click on the row you happened to be looking at. #}
+      <td class="date mailed">
+        {%- if inv.mailed_date -%}
+          {{ inv.mailed_date }}
+        {%- else -%}
+          <button type="button" class="btn small mail-btn" data-id="{{ inv.id }}">Mailed</button>
+        {%- endif -%}
+      </td>
       <td>
         {% if inv.status == 'DUPLICATE' %}
           <div class="dup-status" title="Duplicate — matched {{ inv.matched_fields|join(' + ') }} of the original invoice">
@@ -156,7 +167,7 @@
       </td>
     </tr>
     <tr class="editrow" id="edit-{{ inv.id }}" hidden>
-      <td colspan="10">
+      <td colspan="11">
         <form method="post" action="{{ url_for('edit_invoice', invoice_id=inv.id) }}" class="edit-panel">
           <div class="edit-panel-title">Edit invoice</div>
           <div class="edit-grid">
@@ -174,6 +185,8 @@
               </select>
             </label>
             <label>Check #<input name="check_number" value="{{ inv.check_number }}"></label>
+            <label>Mailed date<input name="mailed_date" value="{{ inv.mailed_date }}"
+                                     placeholder="YYYY-MM-DD, or blank"></label>
           </div>
           <div class="edit-actions">
             <button class="btn primary small" type="submit">Save changes</button>
@@ -196,7 +209,7 @@
       </td>
     </tr>
   {% else %}
-    <tr><td colspan="10" class="empty">No invoices match these filters.</td></tr>
+    <tr><td colspan="11" class="empty">No invoices match these filters.</td></tr>
   {% endfor %}
   </tbody>
 </table>
@@ -274,6 +287,28 @@
                   `This permanently removes it from the database. The filed PDF file is NOT ` +
                   `deleted — it stays on disk.`;
       if (!confirm(msg)) e.preventDefault();
+    });
+  });
+
+  // Mailed: the server stamps its own today, and answers with the date it stored — so the
+  // cell shows what is actually in the database, not what this page assumed the date was.
+  // Replacing the button with that text is also what makes the stamp one-way from the list.
+  document.querySelectorAll('.mail-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        const r = await fetch(`/api/invoices/${btn.dataset.id}/mailed`, { method: 'POST' });
+        const j = await r.json();
+        if (j.ok) {
+          btn.closest('td').textContent = j.date;
+        } else {
+          alert(j.error || 'Could not record the mailed date.');
+          btn.disabled = false;
+        }
+      } catch (e) {
+        alert('Could not reach the app to record the mailed date.');
+        btn.disabled = false;
+      }
     });
   });
 

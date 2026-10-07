@@ -225,6 +225,21 @@ def api_toggle_yardi(invoice_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/invoices/<int:invoice_id>/mailed", methods=["POST"])
+def api_stamp_mailed(invoice_id):
+    """Record today as the day this invoice's check was mailed out.
+
+    The date is the server's own `date.today()`; the browser never sends one, so a wrong
+    clock on the client or a replayed request cannot write a date this app never saw. A row
+    that already carries a date keeps it (see db.stamp_mailed) and the recorded date comes
+    back either way, so the page can show what is actually stored.
+    """
+    recorded = db.stamp_mailed(invoice_id, datetime.date.today().isoformat())
+    if recorded is None:
+        return jsonify({"ok": False, "error": "That invoice no longer exists."}), 404
+    return jsonify({"ok": True, "date": recorded})
+
+
 @app.route("/invoices/<int:invoice_id>/delete", methods=["POST"])
 def delete_invoice(invoice_id):
     """Delete an invoice record. The filed PDF is deliberately left on disk (re-processing the
@@ -330,6 +345,7 @@ def not_duplicate(invoice_id):
 
 @app.route("/invoices/<int:invoice_id>/edit", methods=["POST"])
 def edit_invoice(invoice_id):
+    from core import dates
     from core import processor as ip
     inv = db.get_invoice(invoice_id)
     if not inv:
@@ -337,12 +353,24 @@ def edit_invoice(invoice_id):
         return redirect(request.referrer or url_for("invoices_page"))
     fields = {k: request.form[k] for k in (
         "vendor_name", "invoice_number", "unit", "invoice_date", "amount_text",
-        "property", "check_number") if k in request.form}
+        "property", "check_number", "mailed_date") if k in request.form}
 
     # invoice_date_iso must never disagree with invoice_date - recompute it on every edit.
     if "invoice_date" in fields:
-        from core import dates
         fields["invoice_date_iso"] = dates.to_iso(fields["invoice_date"])
+
+    # mailed_date is stored ISO with no raw-text twin - invoice_date keeps what the vendor
+    # printed and derives the ISO beside it, but a mailed date has only the one column, so
+    # text that won't parse has nowhere to live and would be invisible to every sort and
+    # query. Reject the save outright instead of storing it, and do it here, before the
+    # property branch below starts moving files: a rejected edit must never half-apply.
+    if "mailed_date" in fields:
+        typed = fields["mailed_date"].strip()
+        fields["mailed_date"] = dates.to_iso(typed) if typed else ""
+        if typed and not fields["mailed_date"]:
+            flash(f"Could not read '{typed}' as a mailed date - try a form like 08/10/2026, "
+                  f"or leave it blank. No changes were saved.")
+            return redirect(request.referrer or url_for("invoices_page"))
 
     # vendor_id is derived from vendor_name exactly as invoice_date_iso is derived from
     # invoice_date, and vendor_name is editable on this same form - so a corrected name

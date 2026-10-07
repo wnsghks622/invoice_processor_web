@@ -162,8 +162,10 @@ invoices that can now match it.
 read by Claude, filed into `data/processed/<property>/`, and logged. Output streams live.
 
 **Invoices** — every invoice, searchable and filterable by property, month, amount range, and status.
-Tick **Yardi** as you key each one in (saves instantly). Click a vendor name to open its PDF. The
-edit panel fixes any field; changing the property moves the filed PDF too.
+Tick **Yardi** as you key each one in (saves instantly). Click **Mailed** the day you send the
+check and it records that date; correct or clear it later in the edit panel, and sort the list by
+it to see what went out when. Click a vendor name to open its PDF. The edit panel fixes any field;
+changing the property moves the filed PDF too.
 
 **Month** — everything expected in one month, grouped by property: invoices that normally
 arrive and haven't yet, plus reminders you've written for yourself. Expectations are learned

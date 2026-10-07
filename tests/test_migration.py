@@ -76,6 +76,14 @@ class AddedColumnsRegistry(unittest.TestCase):
         self.assertIn("vendor_id", db.INVOICE_COLUMNS)
         self.assertIn("vendor_needs_review", db.INVOICE_COLUMNS)
 
+    def test_mailed_date_is_registered(self):
+        # Registered as well as declared in _SCHEMA_TABLES: every database in use predates
+        # this column, and CREATE TABLE IF NOT EXISTS does nothing to a table that exists.
+        self.assertIn(("invoices", "mailed_date", "TEXT DEFAULT ''"), db._ADDED_COLUMNS)
+
+    def test_mailed_date_is_in_the_column_list(self):
+        self.assertIn("mailed_date", db.INVOICE_COLUMNS)
+
 
 class VendorIdentityMigrationRegression(unittest.TestCase):
     """Regression tests for the vendor identity schema migration.

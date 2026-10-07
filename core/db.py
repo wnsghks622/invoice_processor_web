@@ -48,6 +48,7 @@ INVOICE_COLUMNS = [
     "stored_file",      # filed VendorShort_MM_YYYY.pdf - the sidecar/assembler join key
     "reconciled",       # "<Month YYYY>" once it clears a statement, else ''
     "check_number",
+    "mailed_date",      # 'YYYY-MM-DD' the check was mailed out; '' until it is
     "carried_forward",  # month it was reviewed but didn't clear, else ''
     "needs_review",     # 0 | 1 (service location not in the property list)
     "origin",           # provenance: 'processor' | 'master' | 'tab:<name>' | 'manual'
@@ -90,6 +91,7 @@ CREATE TABLE IF NOT EXISTS invoices (
     stored_file         TEXT DEFAULT '',
     reconciled          TEXT DEFAULT '',
     check_number        TEXT DEFAULT '',
+    mailed_date         TEXT DEFAULT '',
     carried_forward     TEXT DEFAULT '',
     needs_review        INTEGER DEFAULT 0,
     origin              TEXT DEFAULT 'processor'
@@ -148,6 +150,7 @@ _ADDED_COLUMNS = [
     ("invoices", "vendor_needs_review",  "INTEGER DEFAULT 0"),
     ("obligation", "due_day",            "INTEGER"),
     ("obligation", "due_spread",         "INTEGER"),
+    ("invoices", "mailed_date",          "TEXT DEFAULT ''"),
 ]
 
 
@@ -448,6 +451,24 @@ def set_entered_in_yardi(invoice_id: int, entered: bool) -> None:
     with _connect() as conn:
         conn.execute("UPDATE invoices SET entered_in_yardi=? WHERE id=?",
                      (1 if entered else 0, invoice_id))
+
+
+def stamp_mailed(invoice_id: int, iso_date: str) -> Optional[str]:
+    """Record the day this invoice's check was mailed, and return the date now on the row
+    (None if there is no such invoice).
+
+    Write-once by design: the WHERE clause only matches a row whose mailed_date is still
+    blank, so a double-click or a POST from a stale page re-reads the recorded date instead
+    of overwriting it. Correcting or clearing a date is the edit form's job, where it is
+    deliberate. Both statements share one connection, so nothing can slip between them.
+    """
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE invoices SET mailed_date=? WHERE id=? AND COALESCE(mailed_date,'')=''",
+            (iso_date, invoice_id),
+        )
+        row = conn.execute("SELECT mailed_date FROM invoices WHERE id=?", (invoice_id,)).fetchone()
+    return row["mailed_date"] if row else None
 
 
 def counts() -> dict:

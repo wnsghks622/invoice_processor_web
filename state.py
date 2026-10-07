@@ -23,6 +23,8 @@ SORT_OPTIONS = [
     ("invoice_asc",    "Invoice date — oldest first"),
     ("amount_desc",    "Amount — high to low"),
     ("amount_asc",     "Amount — low to high"),
+    ("mailed_desc",    "Mailed — newest first"),
+    ("mailed_asc",     "Mailed — oldest first"),
 ]
 DEFAULT_SORT = SORT_OPTIONS[0][0]   # most recently processed on top
 
@@ -317,6 +319,12 @@ def sort_and_filter_invoices(rows: list[dict], sort: str, imonth: str, pmonth: s
         "processed_asc":  (lambda r: r["_psort"], False),
         "amount_desc":    (lambda r: r["amount"] if r["amount"] is not None else float("-inf"), True),
         "amount_asc":     (lambda r: r["amount"] if r["amount"] is not None else float("inf"),  False),
+        # mailed_date is already ISO, so the string order IS the date order. A blank sorts
+        # below every date and above none, which lands the un-mailed rows at the bottom of
+        # newest-first and the top of oldest-first - the same place the date sorts above put
+        # their unparseable rows.
+        "mailed_desc":    (lambda r: r.get("mailed_date") or "", True),
+        "mailed_asc":     (lambda r: r.get("mailed_date") or "", False),
     }
     keyfn, reverse = sorters.get(sort, sorters[DEFAULT_SORT])
     rows.sort(key=keyfn, reverse=reverse)

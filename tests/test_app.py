@@ -49,6 +49,7 @@ Run from the project root:
 
     python -m unittest discover -s tests -t . -v
 """
+import datetime
 import sqlite3
 import sys
 import unittest
@@ -1137,6 +1138,149 @@ class InvoiceDateDisplay(unittest.TestCase):
         self.assertIn(
             '<td class="date" title="06262026">06262026 '
             '<span class="muted">needs review</span></td>', html)
+
+
+class MailedOutStamp(unittest.TestCase):
+    """The Mailed column: one click records the day the check went out.
+
+    The stamp is server-side (`date.today()`), never a date the browser sends, so a machine
+    with a wrong clock or a replayed request cannot write a date the server never saw. The
+    re-stamp guard matters because the button is the only way in from the list and it stops
+    rendering once a date exists - a second POST can only come from a stale page or a double
+    click, and neither should silently rewrite a date already recorded.
+    """
+
+    def setUp(self):
+        _conn.execute("DELETE FROM invoices")
+        _conn.commit()
+        self.client = app.app.test_client()
+
+    def _insert(self, invoice_id, mailed_date=""):
+        _conn.execute(
+            "INSERT INTO invoices (id, vendor_name, property, invoice_date, invoice_date_iso, "
+            "mailed_date) VALUES (?, 'Athens', 'Kenmore Plaza', '13-Jul-26', '2026-07-13', ?)",
+            (invoice_id, mailed_date),
+        )
+        _conn.commit()
+
+    def test_an_unmailed_invoice_offers_the_button(self):
+        self._insert(1)
+        html = self.client.get("/invoices").get_data(as_text=True)
+        self.assertIn('<button type="button" class="btn small mail-btn" data-id="1">Mailed</button>',
+                      html)
+
+    def test_a_mailed_invoice_shows_the_date_instead_of_the_button(self):
+        self._insert(1, mailed_date="2026-08-10")
+        html = self.client.get("/invoices").get_data(as_text=True)
+        self.assertIn('<td class="date mailed">2026-08-10</td>', html)
+        # Not assertNotIn('mail-btn'): the page's script block names that class too.
+        self.assertNotIn('mail-btn" data-id="1"', html)
+
+    def test_stamping_records_todays_date(self):
+        self._insert(1)
+        today = datetime.date.today().isoformat()
+
+        resp = self.client.post("/api/invoices/1/mailed")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json(), {"ok": True, "date": today})
+        self.assertEqual(db.get_invoice(1)["mailed_date"], today)
+
+    def test_stamping_again_keeps_the_date_already_recorded(self):
+        self._insert(1, mailed_date="2026-01-05")
+
+        resp = self.client.post("/api/invoices/1/mailed")
+
+        self.assertEqual(resp.get_json()["date"], "2026-01-05")
+        self.assertEqual(db.get_invoice(1)["mailed_date"], "2026-01-05")
+
+    def test_stamping_an_invoice_that_no_longer_exists_is_a_404(self):
+        resp = self.client.post("/api/invoices/999/mailed")
+
+        self.assertEqual(resp.status_code, 404)
+        self.assertFalse(resp.get_json()["ok"])
+
+
+class MailedDateEdit(unittest.TestCase):
+    """POST /invoices/<id>/edit for mailed_date: backdating and correcting.
+
+    mailed_date is a single ISO column, with no raw-text twin like invoice_date has, so
+    there is nowhere for unparseable input to live. It is rejected outright rather than
+    stored raw - the whole save is dropped, the same way the locked-file branch already
+    behaves, so a rejected edit can never half-apply.
+    """
+
+    def setUp(self):
+        _conn.execute("DELETE FROM invoices")
+        _conn.commit()
+        self.client = app.app.test_client()
+        sidecar_patcher = mock.patch.object(db, "export_amount_sidecars")
+        sidecar_patcher.start()
+        self.addCleanup(sidecar_patcher.stop)
+
+    def _insert(self, invoice_id, mailed_date="", check_number=""):
+        _conn.execute(
+            "INSERT INTO invoices (id, vendor_name, property, invoice_date, invoice_date_iso, "
+            "mailed_date, check_number) VALUES (?, 'Athens', 'Kenmore Plaza', '13-Jul-26', "
+            "'2026-07-13', ?, ?)",
+            (invoice_id, mailed_date, check_number),
+        )
+        _conn.commit()
+
+    def test_a_typed_date_is_normalized_to_iso(self):
+        self._insert(1)
+
+        resp = self.client.post("/invoices/1/edit", data={"mailed_date": "08/10/2026"})
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(db.get_invoice(1)["mailed_date"], "2026-08-10")
+
+    def test_a_blank_clears_the_date(self):
+        self._insert(1, mailed_date="2026-08-10")
+
+        resp = self.client.post("/invoices/1/edit", data={"mailed_date": ""})
+
+        self.assertEqual(resp.status_code, 302)
+        self.assertEqual(db.get_invoice(1)["mailed_date"], "")
+
+    def test_an_unparseable_date_is_rejected_and_nothing_is_saved(self):
+        self._insert(1, mailed_date="2026-08-10", check_number="1001")
+
+        resp = self.client.post(
+            "/invoices/1/edit", data={"mailed_date": "banana", "check_number": "2002"})
+
+        self.assertEqual(resp.status_code, 302)
+        row = db.get_invoice(1)
+        self.assertEqual(row["mailed_date"], "2026-08-10")
+        self.assertEqual(row["check_number"], "1001")     # the whole save was dropped
+
+
+class MailedDateSort(unittest.TestCase):
+    """Sorting the list by when the check went out. Blank dates follow the convention the
+    existing date sorts already set: bottom on newest-first, top on oldest-first."""
+
+    def _rows(self):
+        return [
+            {"id": 1, "mailed_date": "2026-08-01", "invoice_date": "", "date_processed": "",
+             "amount": None},
+            {"id": 2, "mailed_date": "2026-08-09", "invoice_date": "", "date_processed": "",
+             "amount": None},
+            {"id": 3, "mailed_date": "", "invoice_date": "", "date_processed": "",
+             "amount": None},
+        ]
+
+    def test_the_sort_menu_offers_both_directions(self):
+        values = [value for value, _ in app.state.SORT_OPTIONS]
+        self.assertIn("mailed_desc", values)
+        self.assertIn("mailed_asc", values)
+
+    def test_newest_first_leads_with_the_latest_date_and_ends_with_the_unmailed(self):
+        rows = app.state.sort_and_filter_invoices(self._rows(), "mailed_desc", "", "")
+        self.assertEqual([r["id"] for r in rows], [2, 1, 3])
+
+    def test_oldest_first_reverses_it(self):
+        rows = app.state.sort_and_filter_invoices(self._rows(), "mailed_asc", "", "")
+        self.assertEqual([r["id"] for r in rows], [3, 1, 2])
 
 
 if __name__ == "__main__":
