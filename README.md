@@ -70,9 +70,9 @@ Create a file named `.env` in the project root:
 ANTHROPIC_API_KEY=sk-ant-your-key-here
 ```
 
-`.env` is gitignored and never leaves your machine. Optionally add `CLAUDE_MODEL=claude-sonnet-5`
+`.env` is gitignored and never leaves your machine. Optionally add `CLAUDE_MODEL=claude-sonnet-5-5`
 on a second line to use a stronger model for messy or handwritten invoices — the default is
-`claude-haiku-4-5`.
+`claude-haiku-5-5`.
 
 ### 5. Start it
 

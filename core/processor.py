@@ -51,10 +51,10 @@ BASE_DIR = config.HERE
 INPUT_FOLDER     = config.INVOICES_TO_PROCESS
 PROCESSED_FOLDER = config.PROCESSED
 
-# Claude model used for extraction. Override in .env (e.g. CLAUDE_MODEL=claude-opus-4-5)
-# without touching the code. Defaults to Haiku 4.5 - the cheapest; step up to a larger
+# Claude model used for extraction. Override in .env (e.g. CLAUDE_MODEL=claude-sonnet-5-5)
+# without touching the code. Defaults to Haiku 5.5 - the cheapest; step up to a larger
 # model for higher accuracy on messy or handwritten invoices.
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "").strip() or "claude-haiku-4-5"
+CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "").strip() or "claude-haiku-5-5"
 
 
 # - WINDOWS CONSOLE FIX -
@@ -244,16 +244,28 @@ def extract_invoice_data(
     try:
         message = client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=8000,   # room for many bills (one per unit) each with line items
+            # Room for many bills (one per unit) each with line items, plus the model's own
+            # thinking, which newer models (Haiku 5.5+) do by default and which counts here.
+            max_tokens=16000,
             messages=[{"role": "user", "content": content}],
         )
-        if getattr(message, "stop_reason", None) == "max_tokens":
+        stop_reason = getattr(message, "stop_reason", None)
+        if stop_reason == "max_tokens":
             # Truncated JSON would fail to parse anyway - say WHY instead of a generic error,
             # and never record a partial read of a many-bill file.
             print("    [!] Claude's reply hit the length limit before finishing (file has too "
                   "many bills for one pass) - skipping this file.")
             return []
-        raw = message.content[0].text.strip()
+        if stop_reason == "refusal":
+            print("    [!] Claude declined to read this file - skipping it.")
+            return []
+        # Newer models can start the reply with "thinking" blocks, so find the text block by
+        # type rather than assuming it comes first.
+        raw = next((b.text for b in message.content if getattr(b, "type", None) == "text"), None)
+        if raw is None:
+            print("    [!] Claude's reply had no text - skipping this file.")
+            return []
+        raw = raw.strip()
         # Strip markdown fences if model adds them
         raw = re.sub(r"^```json\s*|```$", "", raw, flags=re.MULTILINE).strip()
         return _coerce_invoice_list(json.loads(raw))
@@ -261,7 +273,7 @@ def extract_invoice_data(
         # A bad API key fails identically on every file - let main() stop the run
         # cleanly instead of repeating the same error for each invoice.
         raise
-    except (json.JSONDecodeError, IndexError, anthropic.APIError) as exc:
+    except (json.JSONDecodeError, anthropic.APIError) as exc:
         print(f"    [!] Claude extraction failed: {exc}")
         return []
 
